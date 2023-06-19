@@ -197,6 +197,7 @@ ACT2SFN = {
 }
 NORM = {"layer_norm": BertLayerNorm}
 
+DEBUG = False
 
 """
 Quantization-related modules
@@ -288,12 +289,11 @@ class QuantLinear(nn.Module):
 
         # assert that prev_act_scaling_factor is a scalar tensor
         # e.g. all input tensors have the same scalar factor
-        prev_act_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(
-            x.device
-        )
+        prev_act_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(x.device)
         assert (
-            prev_act_scaling_factor is not None
-            and prev_act_scaling_factor.shape == (1,)
+            prev_act_scaling_factor
+            is not None
+            # and prev_act_scaling_factor.shape == (1,)
         )
 
         w = self.weight
@@ -307,9 +307,9 @@ class QuantLinear(nn.Module):
 
         # self.fc_scaling_factor = symmetric_linear_quantization_params(
         #         self.weight_bit, w_min, w_max, self.per_channel)
-        self.fc_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(x.device)
+        self.fc_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
         self.weight_integer = self.weight_function(
-            self.weight, self.weight_bit, self.percentile_mode, self.fraction_bit
+            self.weight, self.weight_bit, self.percentile_mode, self.fc_scaling_factor
         )
 
         bias_scaling_factor = self.fc_scaling_factor * prev_act_scaling_factor
@@ -321,10 +321,664 @@ class QuantLinear(nn.Module):
         prev_act_scaling_factor = prev_act_scaling_factor.view(1, -1)
         x_int = x / prev_act_scaling_factor
 
+        if DEBUG:
+            target = F.linear(x, weight=self.weight, bias=self.bias)
+            output = (
+                F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)
+                * bias_scaling_factor
+            )
+            print(f"Linear Target: {target[:5, :5]}")
+            print(f"Linear Output: {output[:5, :5]}")
         return (
             F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)
-            * bias_scaling_factor,
+            * bias_scaling_factor
         )
+
+
+class QuantEmbedding(nn.Module):
+    """
+    Class to quantize given Embedding layer
+
+    Parameters:
+    activation_bit : int
+        Bitwidth for quantized weights.
+    is_positional : bool, default False
+        If the given Embedding layer is positional embedding.
+    momentum : float, default 0.95
+        Momentum for updating the activation quantization range.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    """
+
+    def __init__(
+        self,
+        weight_bit,
+        is_positional=False,
+        momentum=0.95,
+        quant_mode="none",
+        fraction_bit=10,
+    ):
+        super(QuantEmbedding, self).__init__()
+
+        self.weight_bit = weight_bit
+        self.momentum = momentum
+        self.quant_mode = quant_mode
+        self.per_channel = False
+        self.percentile_mode = False
+        self.is_positional = is_positional
+
+        self.fraction_bit = fraction_bit
+
+        if self.quant_mode == "none":
+            self.weight_function = None
+        elif self.quant_mode == "symmetric":
+            self.weight_function = SymmetricQuantFunction.apply
+        elif self.quant_mode == "asymmetric":
+            raise NotImplementedError(
+                "unsupported quant mode: {}".format(self.quant_mode)
+            )
+        else:
+            raise ValueError("unknown quant mode: {}".format(self.quant_mode))
+
+    def set_param(self, embedding):
+        self.num_embeddings = embedding.num_embeddings
+        self.embedding_dim = embedding.embedding_dim
+        self.padding_idx = embedding.padding_idx
+        self.max_norm = embedding.max_norm
+        self.norm_type = embedding.norm_type
+        self.scale_grad_by_freq = embedding.scale_grad_by_freq
+        self.sparse = embedding.sparse
+        self.weight = embedding.weight
+
+        if not self.per_channel:
+            dim_scaling_factor = 1
+        else:
+            dim_scaling_factor = self.embedding_dim
+        self.register_buffer("weight_scaling_factor", torch.zeros(dim_scaling_factor))
+        self.register_buffer("weight_integer", torch.zeros_like(self.weight))
+
+        if self.is_positional:
+            if self.padding_idx is not None:
+                self.max_positions = self.num_embeddings - self.padding_idx - 1
+            else:
+                self.max_positions = self.num_embeddings
+
+    def forward(self, x, positions=None, incremental_state=None):
+        if self.quant_mode == "none":
+            return F.embedding(
+                x,
+                self.weight,
+                self.padding_idx,
+                self.max_norm,
+                self.norm_type,
+                self.scale_grad_by_freq,
+                self.sparse,
+            )
+
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        w = self.weight
+        w_transform = w.data.detach()
+        if self.per_channel:
+            w_min, _ = torch.min(w_transform, dim=0, keepdim=True, out=None)
+            w_max, _ = torch.max(w_transform, dim=0, keepdim=True, out=None)
+        else:
+            w_min = w_transform.min().expand(1)
+            w_max = w_transform.max().expand(1)
+
+        # self.weight_scaling_factor = symmetric_linear_quantization_params(
+        #             self.weight_bit, w_min, w_max, self.per_channel)
+        self.weight_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(x.device)
+        self.weight_integer = self.weight_function(
+            self.weight,
+            self.weight_bit,
+            self.percentile_mode,
+            self.weight_scaling_factor,
+        )
+
+        if self.is_positional:
+            assert (positions is None) or (
+                self.padding_idx is None
+            ), "If positions is pre-computed then padding_idx should not be set."
+
+            if positions is None:
+                if incremental_state is not None:
+                    # positions is the same for every token when decoding a single step
+                    # Without the int() cast, it doesn't work in some cases when exporting to ONNX
+                    positions = torch.zeros(
+                        (1, 1), device=x.device, dtype=x.dtype
+                    ).fill_(int(self.padding_idx + x.size(1)))
+                else:
+                    positions = utils.make_positions(
+                        x, self.padding_idx, onnx_trace=False
+                    )
+            x = positions
+
+        emb_int = F.embedding(
+            x,
+            self.weight_integer,
+            self.padding_idx,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.sparse,
+        )
+
+        if DEBUG:
+            target = F.embedding(
+                x,
+                self.weight,
+                self.padding_idx,
+                self.max_norm,
+                self.norm_type,
+                self.scale_grad_by_freq,
+                self.sparse,
+            )
+            output = emb_int * self.weight_scaling_factor
+            print(f"Embedding Target: {target[:5, 0, :5]}")
+            print(f"Embedding Output: {output[:5, 0, :5]}")
+        return emb_int * self.weight_scaling_factor
+
+
+class QuantAct(nn.Module):
+    """
+    Class to quantize given activations
+
+    Parameters:
+    ----------
+    activation_bit : int
+        Bitwidth for quantized activations.
+    act_range_momentum : float, default 0.95
+        Momentum for updating the activation quantization range.
+    running_stat : bool, default True
+        Whether to use running statistics for activation quantization range.
+    per_channel : bool, default False
+        Whether to use channel-wise quantization.
+    channel_len : int, default None
+        Specify the channel length when using the per_channel mode.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    """
+
+    def __init__(
+        self,
+        activation_bit,
+        act_range_momentum=0.95,
+        running_stat=True,
+        per_channel=False,
+        channel_len=None,
+        quant_mode="none",
+        fraction_bit=10,
+    ):
+        super(QuantAct, self).__init__()
+
+        self.activation_bit = activation_bit
+        self.act_range_momentum = act_range_momentum
+        self.running_stat = running_stat
+        self.quant_mode = quant_mode
+        self.percentile = False
+
+        self.fraction_bit = fraction_bit
+
+        if not per_channel:
+            self.register_buffer("x_min", torch.zeros(1))
+            self.register_buffer("x_max", torch.zeros(1))
+            self.register_buffer("act_scaling_factor", torch.zeros(1))
+        else:
+            assert channel_len is not None
+            self.register_buffer("x_min", torch.zeros(channel_len))
+            self.register_buffer("x_max", torch.zeros(channel_len))
+            self.register_buffer("act_scaling_factor", torch.zeros(channel_len))
+
+        self.quant_mode = quant_mode
+        self.per_channel = per_channel
+
+        if self.quant_mode == "none":
+            self.act_function = None
+        elif self.quant_mode == "symmetric":
+            self.act_function = SymmetricQuantFunction.apply
+        elif self.quant_mode == "asymmetric":
+            raise NotImplementedError(
+                "unsupported quant mode: {}".format(self.quant_mode)
+            )
+        else:
+            raise ValueError("unknown quant mode: {}".format(self.quant_mode))
+
+    def __repr__(self):
+        return (
+            "{0}(activation_bit={1}, "
+            "quant_mode: {2}, Act_min: {3:.2f}, "
+            "Act_max: {4:.2f})".format(
+                self.__class__.__name__,
+                self.activation_bit,
+                self.quant_mode,
+                self.x_min.item(),
+                self.x_max.item(),
+            )
+        )
+
+    def fix(self):
+        """
+        fix the activation range by setting running stat
+        """
+        self.running_stat = False
+
+    def unfix(self):
+        """
+        unfix the activation range by setting running stat
+        """
+        self.running_stat = True
+
+    def forward(
+        self,
+        x,
+        pre_act_scaling_factor=None,
+        identity=None,
+        identity_scaling_factor=None,
+        specified_min=None,
+        specified_max=None,
+    ):
+        # collect runnng stats
+        x_act = x if identity is None else identity + x
+        if self.running_stat:
+            if not self.percentile:
+                if not self.per_channel:
+                    x_min = x_act.data.min()
+                    x_max = x_act.data.max()
+                else:
+                    x_min = x_act.data.min(axis=0).values.min(axis=0).values
+                    x_max = x_act.data.max(axis=0).values.max(axis=0).values
+            else:
+                raise NotImplementedError("percentile mode is not currently supported.")
+
+            # Initialization
+            if torch.eq(self.x_min, self.x_max).all():
+                self.x_min = self.x_min + x_min
+                self.x_max = self.x_max + x_max
+
+            # exponential moving average (EMA)
+            # use momentum to prevent the quantized values change greatly every iteration
+            elif self.act_range_momentum == -1:
+                self.x_min = torch.min(self.x_min, x_min)
+                self.x_max = torch.max(self.x_max, x_max)
+            else:
+                self.x_min = self.x_min * self.act_range_momentum + x_min * (
+                    1 - self.act_range_momentum
+                )
+                self.x_max = self.x_max * self.act_range_momentum + x_max * (
+                    1 - self.act_range_momentum
+                )
+
+        if self.quant_mode == "none":
+            return x_act, None
+
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        x_min = self.x_min if specified_min is None else specified_min
+        x_max = self.x_max if specified_max is None else specified_max
+
+        self.act_scaling_factor = symmetric_linear_quantization_params(
+            self.activation_bit, x_min, x_max, per_channel=self.per_channel
+        )
+
+        if pre_act_scaling_factor is None:
+            # this is for the input quantization
+            quant_act_int = self.act_function(
+                x, self.activation_bit, self.percentile, self.act_scaling_factor
+            )
+        else:
+            quant_act_int = fixedpoint_mul.apply(
+                x,
+                pre_act_scaling_factor,
+                self.activation_bit,
+                self.quant_mode,
+                self.act_scaling_factor,
+                identity,
+                identity_scaling_factor,
+            )
+
+        correct_output_scale = self.act_scaling_factor.view(-1)
+
+        return quant_act_int * correct_output_scale, self.act_scaling_factor
+
+
+class IntLayerNorm(nn.Module):
+    """
+    Class to quantize given LayerNorm layer
+
+    Parameters:
+    ----------
+    output_bit : int
+        Bitwidth for the LayerNorm output.
+    overflow_handling : bool, default True
+        Whether to do overflow handling if the intermediate values are larger than 32-bit.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    force_dequant : str, default 'none'
+        Force dequantize LayerNorm if either 'layernorm' or 'nonlinear' is given.
+    """
+
+    def __init__(
+        self,
+        output_bit,
+        overflow_handling=True,
+        quant_mode="none",
+        force_dequant="none",
+        fraction_bit=10,
+    ):
+        super(IntLayerNorm, self).__init__()
+        self.quant_mode = quant_mode
+        if force_dequant in ["nonlinear", "layernorm"]:
+            logger.info("Force dequantize layernorm")
+            self.quant_mode = "none"
+        self.overflow_handling = overflow_handling
+        self.register_buffer("shift", torch.zeros(1))
+        self.output_bit = output_bit
+        self.dim_sqrt = None
+
+        self.fraction_bit = fraction_bit
+
+        # self.activation = QuantAct(output_bit, quant_mode=self.quant_mode)
+        if self.quant_mode == "none":
+            pass
+        elif quant_mode == "symmetric":
+            self.weight_function = SymmetricQuantFunction.apply
+        elif quant_mode == "asymmetric":
+            raise NotImplementedError(
+                "unsupported quant mode: {}".format(self.quant_mode)
+            )
+        else:
+            raise ValueError("unknown quant mode: {}".format(quant_mode))
+
+    def fix(self):
+        self.overflow_handling = False
+
+    def unfix(self):
+        self.overflow_handling = True
+
+    def set_param(self, ln):
+        self.normalized_shape = ln.normalized_shape
+        self.eps = ln.eps
+        self.weight = Parameter(ln.weight.data.clone())
+        self.bias = Parameter(ln.bias.data.clone())
+
+    def set_shift(self, y_int):
+        with torch.no_grad():
+            y_sq_int = y_int**2
+            var_int = torch.sum(y_sq_int, axis=2, keepdim=True)
+            shift = (torch.log2(torch.sqrt(var_int / 2**32)).ceil()).max()
+            shift_old = self.shift
+            self.shift = torch.max(self.shift, shift)
+            logger.info(
+                "Dynamic shift adjustment: {} -> {}".format(
+                    int(shift_old), int(self.shift)
+                )
+            )
+
+    def overflow_fallback(self, y_int):
+        self.set_shift(y_int)
+        y_int_shifted = floor_ste.apply(y_int / 2**self.shift)
+        y_sq_int = y_int_shifted**2
+        var_int = torch.sum(y_sq_int, axis=2, keepdim=True)
+        return var_int
+
+    def forward(self, x, scaling_factor=None, exponents=None):
+        if self.quant_mode == "none":
+            mean = x.mean(axis=2, keepdim=True)
+            y = x - mean
+            var = torch.mean(y**2, axis=2, keepdim=True)
+            x = y / torch.sqrt(self.eps + var)
+            x = x * self.weight + self.bias
+            return x, None
+
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        if self.dim_sqrt is None:
+            n = torch.tensor(x.shape[2], dtype=torch.float)  # feature dim(768)
+            self.dim_sqrt = torch.sqrt(n).cuda()
+
+        # TODO: quantization
+        scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
+
+        # Normalization: computes mean and variance(std)
+        x_int = x / scaling_factor
+        mean_int = round_ste.apply(x_int.mean(axis=2, keepdim=True))
+        y_int = x_int - mean_int
+        y_int_shifted = floor_ste.apply(y_int / 2**self.shift)  # avoid overflow
+        y_sq_int = y_int_shifted**2
+        var_int = torch.sum(y_sq_int, axis=2, keepdim=True)
+
+        # overflow handling in training stage
+        if self.overflow_handling:
+            if var_int.max() >= 2**32:
+                var_int = self.overflow_fallback(y_int)
+                assert var_int.max() < 2**32
+
+        # To be replaced with integer-sqrt kernel that produces the same output
+        std_int = floor_ste.apply(torch.sqrt(var_int)) * 2**self.shift
+        factor = floor_ste.apply(2**31 / std_int)
+        y_int = floor_ste.apply(y_int * factor / 2)
+        scaling_factor = self.dim_sqrt / 2**30
+
+        # scaling and shifting
+        bias = self.bias.data.detach() / (self.weight.data.detach())
+        bias_int = floor_ste.apply(bias / scaling_factor)
+
+        y_int = y_int + bias_int
+        scaling_factor = scaling_factor * self.weight
+        x = y_int * scaling_factor
+
+        return x, scaling_factor
+
+
+class IntGELU(nn.Module):
+    """
+    Class to quantize given GELU layer
+
+    Parameters:
+    ----------
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    force_dequant : str, default 'none'
+        Force dequantize GELU if either 'gelu' or 'nonlinear' is given.
+    """
+
+    def __init__(
+        self,
+        quant_mode="none",
+        force_dequant="none",
+        fraction_bit=10,
+        act_bit=31,
+        gelu_type="mpcformer",
+    ):
+        super(IntGELU, self).__init__()
+        self.register_buffer("input_scaling_factor", torch.ones(1))
+        self.quant_mode = quant_mode
+        if force_dequant in ["nonlinear", "gelu"]:
+            logger.info("Force dequantize gelu")
+            self.quant_mode = "none"
+
+        self.fraction_bit = fraction_bit
+        self.act_bit = act_bit
+        self.gelu_type = gelu_type
+
+        if self.quant_mode == "none":
+            self.activation_fn = nn.GELU()
+        elif self.quant_mode == "symmetric":
+            pass
+        elif quant_mode == "asymmetric":
+            raise NotImplementedError(
+                "unsupported quant mode: {}".format(self.quant_mode)
+            )
+        else:
+            raise ValueError("unknown quant mode: {}".format(quant_mode))
+
+        self.k = 1.4142
+        self.n = 14  # sufficiently large integer
+        self.coeff = [-0.2888, -1.769, 1]  # a(x+b)**2 + c
+        self.coeff[2] /= self.coeff[0]
+
+        self.poly_coeff = [0.125, 0.25, 0.5]
+
+    def fix(self):
+        pass
+
+    def unfix(self):
+        pass
+
+    def int_erf(self, x_int, scaling_factor):
+        with torch.no_grad():
+            b_int = torch.floor(self.coeff[1] / scaling_factor)
+            c_int = torch.floor(self.coeff[2] / scaling_factor**2)
+
+        with torch.no_grad():
+            sign = torch.sign(x_int)
+        abs_int = torch.abs(x_int)
+        abs_int = torch.min(abs_int, -b_int)
+        y_int = (abs_int + b_int) ** 2 + c_int
+        y_int = sign * y_int
+        scaling_factor = scaling_factor**2 * self.coeff[0]
+        y_int = floor_ste.apply(y_int / 2**self.n)
+        scaling_factor = scaling_factor * 2**self.n
+
+        return y_int, scaling_factor
+
+    # MPCFormer impl
+    # GeLU(x) = 0.125x2 + 0.25x + 0.5
+    def int_poly(self, x_int, scaling_factor):
+        with torch.no_grad():
+            a_int = torch.floor(self.poly_coeff[0] / scaling_factor)
+            b_int = torch.floor(self.poly_coeff[2] / scaling_factor)
+            c_int = torch.floor(self.poly_coeff[2] / scaling_factor)
+
+        tmp_int = (
+            floor_ste.apply(a_int * x_int * scaling_factor) + b_int
+        )  # 0.125x + 0.25
+        tmp_int = (
+            floor_ste.apply(x_int * tmp_int * scaling_factor) + c_int
+        )  # x * tmp_int + 0.5
+        return tmp_int
+
+    def forward(self, x, scaling_factor=None):
+        if self.quant_mode == "none":
+            return self.activation_fn(x), None
+
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
+        x_int = x / scaling_factor
+
+        if self.gelu_type == "intglue":
+            sigmoid_int, sigmoid_scaling_factor = self.int_erf(
+                x_int, scaling_factor / self.k
+            )
+
+            shift_int = torch.floor(1.0 / sigmoid_scaling_factor)
+
+            x_int = x_int * (sigmoid_int + shift_int)
+            scaling_factor = scaling_factor * sigmoid_scaling_factor / 2
+        elif self.gelu_type == "mpcformer":
+            # GeLU(x) = 0.125x2 + 0.25x + 0.5
+            if DEBUG:
+                print(f"Using MPCFormer GeLU!!!!")
+            x_int = self.int_poly(x_int=x_int, scaling_factor=scaling_factor)
+            limit = 2 ** (self.act_bit - 1) - 1
+            x_int = torch.clamp(x_int, -limit, limit - 1)
+        else:
+            if DEBUG:
+                print(f"Using raw GeLU!!!!")
+            return nn.GELU(x)
+
+        return x_int * scaling_factor
+
+
+class IntSoftmax(nn.Module):
+    """
+    Class to quantize given Softmax layer
+
+    Parameters:
+    ----------
+    output_bit : int
+        Bitwidth for the Softmax output.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    force_dequant : str, default 'none'
+        Force dequantize Softmax if either 'softmax' or 'nonlinear' is given.
+    """
+
+    def __init__(self, output_bit, quant_mode="none", force_dequant="none"):
+        super(IntSoftmax, self).__init__()
+        self.output_bit = output_bit
+        self.quant_mode = quant_mode
+        if force_dequant in ["nonlinear", "softmax"]:
+            logger.info("Force dequantize softmax")
+            self.quant_mode = "none"
+
+        self.act = QuantAct(16, quant_mode=self.quant_mode)
+        self.x0 = -0.6931  # -ln2
+        self.n = 30  # sufficiently large integer
+        self.coef = [0.35815147, 0.96963238, 1.0]  # ax**2 + bx + c
+        self.coef[1] /= self.coef[0]
+        self.coef[2] /= self.coef[0]
+
+    def fix(self):
+        pass
+
+    def unfix(self):
+        pass
+
+    def int_polynomial(self, x_int, scaling_factor):
+        with torch.no_grad():
+            b_int = torch.floor(self.coef[1] / scaling_factor)
+            c_int = torch.floor(self.coef[2] / scaling_factor**2)
+        z = x_int + b_int
+        z = x_int * z
+        z = z + c_int
+        scaling_factor = self.coef[0] * scaling_factor**2
+        return z, scaling_factor
+
+    def int_exp(self, x_int, scaling_factor):
+        with torch.no_grad():
+            x0_int = torch.floor(self.x0 / scaling_factor)
+        x_int = torch.max(x_int, self.n * x0_int)
+
+        q = floor_ste.apply(x_int / x0_int)
+        r = x_int - x0_int * q
+        exp_int, exp_scaling_factor = self.int_polynomial(r, scaling_factor)
+        exp_int = torch.clamp(floor_ste.apply(exp_int * 2 ** (self.n - q)), min=0)
+        scaling_factor = exp_scaling_factor / 2**self.n
+        return exp_int, scaling_factor
+
+    def forward(self, x, scaling_factor):
+        if self.quant_mode == "none":
+            return utils.softmax(x, dim=-1, onnx_trace=False), None
+
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        x_int = x / scaling_factor
+
+        x_int_max, _ = x_int.max(dim=-1, keepdim=True)
+        x_int = x_int - x_int_max
+
+        exp_int, exp_scaling_factor = self.int_exp(x_int, scaling_factor)
+        exp, exp_scaling_factor = self.act(exp_int, exp_scaling_factor)
+        exp_int = exp / exp_scaling_factor
+        exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
+
+        factor = floor_ste.apply(2**32 / exp_int_sum)
+        exp_int = floor_ste.apply(exp_int * factor / 2 ** (32 - self.output_bit))
+        scaling_factor = 1 / 2**self.output_bit
+        return exp_int * scaling_factor, scaling_factor
 
 
 class BertConfig(object):
@@ -435,19 +1089,48 @@ class BertConfig(object):
             writer.write(self.to_json_string())
 
 
+# Embedding -> QuantEmbedding with MEDIUM
+# TODO: layernorm
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
-        self.word_embeddings = nn.Embedding(
-            config.vocab_size, config.hidden_size, padding_idx=0
+        # self.word_embeddings = nn.Embedding(
+        #     config.vocab_size, config.hidden_size, padding_idx=0
+        # )
+        # self.position_embeddings = nn.Embedding(
+        #     config.max_position_embeddings, config.hidden_size
+        # )
+        # self.token_type_embeddings = nn.Embedding(
+        #     config.type_vocab_size, config.hidden_size
+        # )
+
+        self.word_embeddings = QuantEmbedding(
+            weight_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
         )
-        self.position_embeddings = nn.Embedding(
-            config.max_position_embeddings, config.hidden_size
+        self.word_embeddings.set_param(
+            nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
         )
-        self.token_type_embeddings = nn.Embedding(
-            config.type_vocab_size, config.hidden_size
+
+        self.position_embeddings = QuantEmbedding(
+            weight_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.position_embeddings.set_param(
+            nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        )
+
+        self.token_type_embeddings = QuantEmbedding(
+            weight_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.token_type_embeddings.set_param(
+            nn.Embedding(config.type_vocab_size, config.hidden_size)
         )
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
@@ -474,6 +1157,8 @@ class BertEmbeddings(nn.Module):
         return embeddings
 
 
+# Linear -> QuantLinear with SMALL
+# TODO: softmax
 class BertSelfAttention(nn.Module):
     def __init__(self, config):
         super(BertSelfAttention, self).__init__()
@@ -486,9 +1171,33 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = nn.Linear(config.hidden_size, self.all_head_size)
-        self.key = nn.Linear(config.hidden_size, self.all_head_size)
-        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+        # self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        # self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        # self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+        self.query = QuantLinear(
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.query.set_param(nn.Linear(config.hidden_size, self.all_head_size))
+
+        self.key = QuantLinear(
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.key.set_param(nn.Linear(config.hidden_size, self.all_head_size))
+
+        self.value = QuantLinear(
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.value.set_param(nn.Linear(config.hidden_size, self.all_head_size))
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
         self.softmax_act = ACT2SFN[config.softmax_act]
@@ -562,10 +1271,19 @@ class BertAttention(nn.Module):
         return attention_output, layer_att
 
 
+# Linear -> QuantLinear with SMALL
+# TODO: layernorm
 class BertSelfOutput(nn.Module):
     def __init__(self, config):
         super(BertSelfOutput, self).__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = QuantLinear(
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.dense.set_param(nn.Linear(config.hidden_size, config.hidden_size))
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -576,19 +1294,42 @@ class BertSelfOutput(nn.Module):
         return hidden_states
 
 
+# Linear -> QuantLinear with SMALL
+# TODO: gelu
 class BertIntermediate(nn.Module):
     def __init__(self, config, intermediate_size=-1):
         super(BertIntermediate, self).__init__()
         if intermediate_size < 0:
-            self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
+            # self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
+            self.dense = QuantLinear(
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.dense.set_param(
+                nn.Linear(config.hidden_size, config.intermediate_size)
+            )
         else:
-            self.dense = nn.Linear(config.hidden_size, intermediate_size)
-        if isinstance(config.hidden_act, str) or (
-            sys.version_info[0] == 2 and isinstance(config.hidden_act, unicode)
-        ):
-            self.intermediate_act_fn = ACT2FN[config.hidden_act]
-        else:
-            self.intermediate_act_fn = config.hidden_act
+            # self.dense = nn.Linear(config.hidden_size, intermediate_size)
+            self.dense = QuantLinear(
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.dense.set_param(nn.Linear(config.hidden_size, intermediate_size))
+        # if isinstance(config.hidden_act, str) or (
+        #     sys.version_info[0] == 2 and isinstance(config.hidden_act, unicode)
+        # ):
+        #     self.intermediate_act_fn = ACT2FN[config.hidden_act]
+        # else:
+        #     self.intermediate_act_fn = config.hidden_act
+        self.intermediate_act_fn = IntGELU(
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+            gelu_type="mpcformer",
+        )
         if config.log_path is not None:
             with open(config.log_path, "a") as f:
                 f.write(f"using act: {self.intermediate_act_fn} \n")
@@ -599,13 +1340,31 @@ class BertIntermediate(nn.Module):
         return hidden_states
 
 
+# Linear -> QuantLinear with SMALL
+# TODO: layernorm
 class BertOutput(nn.Module):
     def __init__(self, config, intermediate_size=-1):
         super(BertOutput, self).__init__()
         if intermediate_size < 0:
-            self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+            # self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+            self.dense = QuantLinear(
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.dense.set_param(
+                nn.Linear(config.intermediate_size, config.hidden_size)
+            )
         else:
-            self.dense = nn.Linear(intermediate_size, config.hidden_size)
+            # self.dense = nn.Linear(intermediate_size, config.hidden_size)
+            self.dense = QuantLinear(
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.dense.set_param(nn.Linear(intermediate_size, config.hidden_size))
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -649,10 +1408,19 @@ class BertEncoder(nn.Module):
         return all_encoder_layers, all_encoder_atts
 
 
+# Linear -> QuantLinear with MEDIUM
+# TODO: tanh approximation
 class BertPooler(nn.Module):
     def __init__(self, config, recurs=None):
         super(BertPooler, self).__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = QuantLinear(
+            weight_bit=FM_BIT_MEDIUM,
+            bias_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.dense.set_param(nn.Linear(config.hidden_size, config.hidden_size))
         self.activation = nn.Tanh()
         self.config = config
 
@@ -1345,16 +2113,31 @@ class BertForSentencePairClassification(BertPreTrainedModel):
             return logits
 
 
+# Linear -> QuantLinear with MEDIUM
 class TinyBertForSequenceClassification(BertPreTrainedModel):
     def __init__(self, config, num_labels, fit_size=768):
         super(TinyBertForSequenceClassification, self).__init__(config)
         self.num_labels = num_labels
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        # self.classifier = nn.Linear(config.hidden_size, num_labels)
+        self.classifier = QuantLinear(
+            weight_bit=FM_BIT_MEDIUM,
+            bias_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.classifier.set_param(nn.Linear(config.hidden_size, num_labels))
         self.extra_project = config.hidden_size != fit_size
         if self.extra_project:
-            self.fit_dense = nn.Linear(config.hidden_size, fit_size)
+            # self.fit_dense = nn.Linear(config.hidden_size, fit_size)
+            self.fit_dense = QuantLinear(
+                weight_bit=FM_BIT_MEDIUM,
+                bias_bit=FM_BIT_MEDIUM,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_MEDIUM,
+            )
+            self.fit_dense.set_param(nn.Linear(config.hidden_size, fit_size))
         self.apply(self.init_bert_weights)
 
     def forward(
