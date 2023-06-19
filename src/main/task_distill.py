@@ -794,13 +794,13 @@ def main():
                         action="store_true")
     
     # quantization arguments
-    parser.add_argument('--quantization', default=False, action="store_true")
+    parser.add_argument('--quant', default=False, action="store_true")
 
 
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
 
-    if args.quantization:
+    if args.quant:
         from transformer.quant_bert_modeling import TinyBertForSequenceClassification as student_bert
     else:
         from transformer.modeling import TinyBertForSequenceClassification as student_bert
@@ -1186,7 +1186,7 @@ def main():
                             mox.file.copy_parallel('.', args.data_url)
 
                     student_model.train()
-
+                # return 1
 
 if __name__ == "__main__":
     main()
