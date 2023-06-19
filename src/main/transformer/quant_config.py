@@ -1,0 +1,9 @@
+# fractional bit mapping
+FRACTION_BIT_SMALL = 10
+FRACTION_BIT_MEDIUM = 20
+FRACTION_BIT_LARGE = 28
+
+# data encoding bit length
+FM_BIT_SMALL = 32
+FM_BIT_MEDIUM = 64
+FM_BIT_LARGE = 128

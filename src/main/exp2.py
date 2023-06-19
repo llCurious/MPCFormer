@@ -18,6 +18,8 @@ parser.add_argument('--bs', type=int, default=32)
 parser.add_argument('--hidden_act', type=str)
 parser.add_argument('--softmax_act', type=str)
 
+parser.add_argument('--quant', default=False, action='store_true')
+
 args = parser.parse_args()
 task_name = args.task_name
 lr_hidden = args.lr_hidden
@@ -65,7 +67,9 @@ def distill():
                --data_dir {data_dir} --task_name {task_name} --output_dir {output_dir} \
                --max_seq_length 128 --train_batch_size {bs} --learning_rate {lr_hidden}\
                --do_lower_case --log_path {log_path} --hidden_act {hidden_act} --softmax_act {softmax_act}"
-
+    if args.quant:
+        cmd += " --quant"
+    print(f'CMD: {cmd}')
     subprocess.run(cmd, shell=True)
 
     # distill pred layers
@@ -93,6 +97,8 @@ def distill():
                --hidden_act {hidden_act} \
                --softmax_act {softmax_act}"
 
+    if args.quant:
+        cmd += " --quant"
     subprocess.run(cmd, shell=True)
     with open(log_path, "a") as f:
         f.write(f"distilled S2 {hidden_act} {softmax_act} \n")

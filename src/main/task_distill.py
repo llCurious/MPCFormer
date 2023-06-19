@@ -792,11 +792,19 @@ def main():
                         default=-1)
     parser.add_argument('--ablation_init',
                         action="store_true")
-
+    
+    # quantization arguments
+    parser.add_argument('--quantization', default=False, action="store_true")
 
 
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
+
+    if args.quantization:
+        from transformer.quant_bert_modeling import TinyBertForSequenceClassification as student_bert
+    else:
+        from transformer.modeling import TinyBertForSequenceClassification as student_bert
+
 
     processors = {
         "cola": ColaProcessor,
@@ -944,10 +952,10 @@ def main():
         student_model = TinyRobertaForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels, fit_size=teacher_model.config.hidden_size)
     else:
         if args.ablation_init:
-            student_model = TinyBertForSequenceClassification.from_scratch(args.student_model, hidden_act=args.hidden_act, softmax_act=args.softmax_act, num_labels=num_labels, fit_size=teacher_model.config.hidden_size)
+            student_model = student_bert.from_scratch(args.student_model, hidden_act=args.hidden_act, softmax_act=args.softmax_act, num_labels=num_labels, fit_size=teacher_model.config.hidden_size)
             logger.info("student load from scratch")
         else:
-            student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, hidden_act=args.hidden_act, softmax_act=args.softmax_act, num_labels=num_labels, fit_size=teacher_model.config.hidden_size)
+            student_model = student_bert.from_pretrained(args.student_model, hidden_act=args.hidden_act, softmax_act=args.softmax_act, num_labels=num_labels, fit_size=teacher_model.config.hidden_size)
             logger.info("student load from pretrained")
 
     student_model.to(device)
