@@ -34,7 +34,8 @@ student_dir = args.student_dir
 
 config = json.load(open(os.path.join(teacher_dir, "config.json")))
 model_type = config["_name_or_path"]
-base_dir = os.path.join("tmp", exp_name, task_name, f"{hidden_act}_{softmax_act}", model_type)
+exp_name = 'qd' if args.quant else "distill"
+base_dir = os.path.join("tmp", exp_name, task_name, f"{hidden_act}_{softmax_act}", model_type.split("/")[-1])
 
 os.makedirs(base_dir, exist_ok=True)
 log_path = os.path.join(base_dir, "log.txt")
@@ -72,6 +73,7 @@ def distill():
     print(f'CMD: {cmd}')
     subprocess.run(cmd, shell=True)
 
+    # return 1
     # distill pred layers
     config = json.load(open(os.path.join(output_dir, "config.json")))
     config["log_path"] = log_path 
