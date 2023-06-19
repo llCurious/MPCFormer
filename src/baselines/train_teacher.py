@@ -39,10 +39,11 @@ def HPO_teacher_bert():
     bs = 32 // num_devices
     teacher_acc = []
     
+    model_path = os.path.join(os.path.expanduser("~"), ".cache/huggingface/transformers/bert-base-uncased")
     for lr in lr_list:
         output_dir = os.path.join(base_dir, str(lr))
         result_path = os.path.join(output_dir, "eval_results.json")
-        cmd = f"python run_glue.py --model_name_or_path bert-base-uncased --task_name {task_name} \
+        cmd = f"python run_glue.py --model_name_or_path {model_path} --task_name {task_name} \
               --do_train --do_eval --max_seq_length 128 --per_device_train_batch_size {bs} --learning_rate {str(lr)} \
               --num_train_epochs 3 --save_steps 200 --act gelu --softmax_act softmax --output_dir {output_dir} --overwrite_output_dir"
         subprocess.run(cmd, shell=True)
@@ -62,10 +63,11 @@ def HPO_teacher_bert_large():
     bs = 32 // num_devices
     teacher_acc = []
     
+    model_path = os.path.join(os.path.expanduser("~"), ".cache/huggingface/transformers/bert-large-uncased")
     for lr in lr_list:
         output_dir = os.path.join(base_dir, str(lr))
         result_path = os.path.join(output_dir, "eval_results.json")
-        cmd = f"python run_glue.py --model_name_or_path bert-large-uncased --task_name {task_name} \
+        cmd = f"python run_glue.py --model_name_or_path {model_path} --task_name {task_name} \
               --do_train --do_eval --max_seq_length 128 --per_device_train_batch_size {bs} --learning_rate {str(lr)} \
               --num_train_epochs 3 --save_steps 200 --act gelu --softmax_act softmax --output_dir {output_dir} --overwrite_output_dir"
         subprocess.run(cmd, shell=True)
