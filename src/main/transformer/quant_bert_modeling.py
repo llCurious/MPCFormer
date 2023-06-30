@@ -289,7 +289,9 @@ class QuantLinear(nn.Module):
 
         # assert that prev_act_scaling_factor is a scalar tensor
         # e.g. all input tensors have the same scalar factor
-        prev_act_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(x.device)
+        prev_act_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(
+            x.device
+        )
         assert (
             prev_act_scaling_factor
             is not None
@@ -430,7 +432,9 @@ class QuantEmbedding(nn.Module):
 
         # self.weight_scaling_factor = symmetric_linear_quantization_params(
         #             self.weight_bit, w_min, w_max, self.per_channel)
-        self.weight_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(x.device)
+        self.weight_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(
+            x.device
+        )
         self.weight_integer = self.weight_function(
             self.weight,
             self.weight_bit,
@@ -887,14 +891,10 @@ class IntGELU(nn.Module):
             scaling_factor = scaling_factor * sigmoid_scaling_factor / 2
         elif self.gelu_type == "mpcformer":
             # GeLU(x) = 0.125x2 + 0.25x + 0.5
-            if DEBUG:
-                print(f"Using MPCFormer GeLU!!!!")
             x_int = self.int_poly(x_int=x_int, scaling_factor=scaling_factor)
             limit = 2 ** (self.act_bit - 1) - 1
             x_int = torch.clamp(x_int, -limit, limit - 1)
         else:
-            if DEBUG:
-                print(f"Using raw GeLU!!!!")
             return nn.GELU(x)
 
         return x_int * scaling_factor
@@ -914,13 +914,23 @@ class IntSoftmax(nn.Module):
         Force dequantize Softmax if either 'softmax' or 'nonlinear' is given.
     """
 
-    def __init__(self, output_bit, quant_mode="none", force_dequant="none"):
+    def __init__(
+        self,
+        output_bit,
+        quant_mode="none",
+        force_dequant="none",
+        fraction_bit=10,
+        softmax_mode="2relu",
+    ):
         super(IntSoftmax, self).__init__()
         self.output_bit = output_bit
         self.quant_mode = quant_mode
         if force_dequant in ["nonlinear", "softmax"]:
             logger.info("Force dequantize softmax")
             self.quant_mode = "none"
+
+        self.fraction_bit = fraction_bit
+        self.softmax_mode = softmax_mode
 
         self.act = QuantAct(16, quant_mode=self.quant_mode)
         self.x0 = -0.6931  # -ln2
@@ -957,7 +967,7 @@ class IntSoftmax(nn.Module):
         scaling_factor = exp_scaling_factor / 2**self.n
         return exp_int, scaling_factor
 
-    def forward(self, x, scaling_factor):
+    def forward(self, x, scaling_factor=None, dim=-1):
         if self.quant_mode == "none":
             return utils.softmax(x, dim=-1, onnx_trace=False), None
 
@@ -965,20 +975,40 @@ class IntSoftmax(nn.Module):
             self.quant_mode
         )
 
+        scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
         x_int = x / scaling_factor
 
-        x_int_max, _ = x_int.max(dim=-1, keepdim=True)
-        x_int = x_int - x_int_max
+        if self.softmax_mode == "intsoftmax":
+            x_int_max, _ = x_int.max(dim=-1, keepdim=True)
+            x_int = x_int - x_int_max
 
-        exp_int, exp_scaling_factor = self.int_exp(x_int, scaling_factor)
-        exp, exp_scaling_factor = self.act(exp_int, exp_scaling_factor)
-        exp_int = exp / exp_scaling_factor
-        exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
+            exp_int, exp_scaling_factor = self.int_exp(x_int, scaling_factor)
+            exp, exp_scaling_factor = self.act(exp_int, exp_scaling_factor)
+            exp_int = exp / exp_scaling_factor
+            exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
 
-        factor = floor_ste.apply(2**32 / exp_int_sum)
-        exp_int = floor_ste.apply(exp_int * factor / 2 ** (32 - self.output_bit))
-        scaling_factor = 1 / 2**self.output_bit
-        return exp_int * scaling_factor, scaling_factor
+            factor = floor_ste.apply(2**32 / exp_int_sum)
+            out = floor_ste.apply(exp_int * factor / 2 ** (32 - self.output_bit))
+            scaling_factor = 1 / 2**self.output_bit
+        elif self.softmax_mode == "2relu":
+            x_int = torch.nn.functional.relu(x_int)
+            dim = -1
+            eps = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
+            reduce_dim = x_int.shape[dim]
+            out = (x_int + eps / reduce_dim) / (
+                torch.sum(x_int, dim=dim, keepdims=True) + eps
+            )
+        else:
+            raise NotImplementedError(
+                f"Int Softmax Mode: {self.softmax_mode} is not supported."
+            )
+
+        if out.device == torch.device("cuda:0") and DEBUG:
+            target = torch.nn.functional.softmax(x, -1)
+            output = out * scaling_factor
+            print(f"Softmax Target: {target[:5, :5]}")
+            print(f"Softmax Output: {output[:5, :5]}")
+        return out * scaling_factor
 
 
 class BertConfig(object):
@@ -1158,7 +1188,7 @@ class BertEmbeddings(nn.Module):
 
 
 # Linear -> QuantLinear with SMALL
-# TODO: softmax
+# softmax -> IntSoftmax with SMALL
 class BertSelfAttention(nn.Module):
     def __init__(self, config):
         super(BertSelfAttention, self).__init__()
@@ -1200,7 +1230,13 @@ class BertSelfAttention(nn.Module):
         self.value.set_param(nn.Linear(config.hidden_size, self.all_head_size))
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-        self.softmax_act = ACT2SFN[config.softmax_act]
+
+        if config.softmax_act == "quan_softmax":
+            self.softmax_act = IntSoftmax(
+                FM_BIT_SMALL, "symmetric", FRACTION_BIT_SMALL, softmax_mode="2relu"
+            )
+        else:
+            self.softmax_act = ACT2SFN[config.softmax_act]
         self.softmax_type = config.softmax_act
         if config.log_path is not None:
             with open(config.log_path, "a") as f:
