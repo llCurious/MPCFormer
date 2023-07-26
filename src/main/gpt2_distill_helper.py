@@ -29,8 +29,7 @@ import sys
 
 import numpy as np
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-                              TensorDataset)
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from tqdm import tqdm, trange
 
 from torch.nn import CrossEntropyLoss, MSELoss
@@ -38,17 +37,24 @@ from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
 import datasets
 
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from transformers import GPT2Tokenizer
 from transformers import AutoTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 
+# modification
+from transformer.gpt2_modeling import GPT2LMHeadModel
+
 csv.field_size_limit(sys.maxsize)
 
-log_format = '%(asctime)s %(message)s'
-logging.basicConfig(stream=sys.stdout, level=logging.INFO,
-                    format=log_format, datefmt='%m/%d %I:%M:%S %p')
-fh = logging.FileHandler('debug_layer_loss.log')
+log_format = "%(asctime)s %(message)s"
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format=log_format,
+    datefmt="%m/%d %I:%M:%S %p",
+)
+fh = logging.FileHandler("debug_layer_loss.log")
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 logger = logging.getLogger()
@@ -115,15 +121,18 @@ class DataProcessor(object):
             lines = []
             for line in reader:
                 if sys.version_info[0] == 2:
-                    line = list(unicode(cell, 'utf-8') for cell in line)
+                    line = list(unicode(cell, "utf-8") for cell in line)
                 lines.append(line)
             return lines
 
 
 class ImdbProcessor(DataProcessor):
-    def __init__(self,):
+    def __init__(
+        self,
+    ):
         super().__init__()
         from datasets import load_dataset
+
         self.raw_datasets = load_dataset("imdb")
 
     def get_train_examples(self, data_dir):
@@ -133,22 +142,25 @@ class ImdbProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         test_dataset = self.raw_datasets["test"]
         return self._create_examples(test_dataset, "eval")
-    
-    def get_labels(self, ):
+
+    def get_labels(
+        self,
+    ):
         return [0, 1]
         # return self.raw_datasets["train"].features["label"].names
-    
+
     def _create_examples(self, dataset, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(dataset):
+        for i, line in enumerate(dataset):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, i)
-            text_a = line['text']
-            label = line['label']
+            text_a = line["text"]
+            label = line["label"]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
+            )
         return examples
 
 
@@ -158,16 +170,19 @@ class MrpcProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -176,7 +191,7 @@ class MrpcProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, i)
@@ -184,7 +199,8 @@ class MrpcProcessor(DataProcessor):
             text_b = line[4]
             label = line[0]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -194,27 +210,29 @@ class MnliProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")),
-            "dev_matched")
+            self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")), "dev_matched"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
-        #return ["contradiction", "entailment", "neutral"]
+        # return ["contradiction", "entailment", "neutral"]
         return ["entailment", "neutral", "contradiction"]
 
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -222,7 +240,8 @@ class MnliProcessor(DataProcessor):
             text_b = line[9]
             label = line[-1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -232,8 +251,8 @@ class MnliMismatchedProcessor(MnliProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev_mismatched.tsv")),
-            "dev_matched")
+            self._read_tsv(os.path.join(data_dir, "dev_mismatched.tsv")), "dev_matched"
+        )
 
 
 class ColaProcessor(DataProcessor):
@@ -242,16 +261,19 @@ class ColaProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -260,12 +282,13 @@ class ColaProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             text_a = line[3]
             label = line[1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
+            )
         return examples
 
 
@@ -275,16 +298,19 @@ class Sst2Processor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -293,14 +319,15 @@ class Sst2Processor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, i)
             text_a = line[0]
             label = line[1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
+            )
         return examples
 
 
@@ -310,16 +337,19 @@ class StsbProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -328,7 +358,7 @@ class StsbProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -336,7 +366,8 @@ class StsbProcessor(DataProcessor):
             text_b = line[8]
             label = line[-1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -346,16 +377,19 @@ class QqpProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -364,7 +398,7 @@ class QqpProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -375,7 +409,8 @@ class QqpProcessor(DataProcessor):
             except IndexError:
                 continue
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -385,17 +420,19 @@ class QnliProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")),
-            "dev_matched")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev_matched"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -404,7 +441,7 @@ class QnliProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -412,7 +449,8 @@ class QnliProcessor(DataProcessor):
             text_b = line[2]
             label = line[-1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -422,16 +460,19 @@ class RteProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_aug_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -440,7 +481,7 @@ class RteProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -448,7 +489,8 @@ class RteProcessor(DataProcessor):
             text_b = line[2]
             label = line[-1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
 
@@ -458,12 +500,14 @@ class WnliProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
+        )
 
     def get_labels(self):
         """See base class."""
@@ -472,7 +516,7 @@ class WnliProcessor(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines):
+        for i, line in enumerate(lines):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -480,52 +524,26 @@ class WnliProcessor(DataProcessor):
             text_b = line[2]
             label = line[-1]
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            )
         return examples
 
-class WikiProcessor(DataProcessor):
-    """Processor for the Wikitext data set."""
 
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines):
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            label = line[1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-        return examples
-
-def convert_examples_to_features(examples, max_seq_length,
-                                 tokenizer):
+def convert_examples_to_features(examples, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
 
     features = []
     labels = []
-    for i in range(len(examples)):
+    for i in trange(len(examples)):
         encoded_inputs = tokenizer.encode(
-            examples[i], return_tensors="pt", max_length=max_seq_length, truncation=True, padding='max_length'
+            examples[i],
+            return_tensors="pt",
+            max_length=max_seq_length,
+            truncation=True,
+            padding="max_length",
         )
         label = encoded_inputs[:, 1:]
+        # logger.info(f"input size: {encoded_inputs.shape}, label size: {label.shape}")
         features.append(encoded_inputs)
         labels.append(label)
     return features, labels
@@ -546,6 +564,8 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 """
 Metric-related codes
 """
+
+
 def simple_ppl(preds, labels, tokenizer):
     loss = torch.sum(
         torch.nn.functional.log_softmax(preds, dim=-1)
@@ -555,6 +575,7 @@ def simple_ppl(preds, labels, tokenizer):
     count = torch.sum(labels != tokenizer.pad_token_id)
     perplexity = torch.exp(-loss / count)
     return perplexity
+
 
 def simple_accuracy(preds, labels):
     return (preds == labels).mean()
@@ -612,9 +633,10 @@ def compute_metrics(task_name, preds, labels, tokenizer):
 
 def get_tensor_data(data):
     feats, labels = data
-    
-    all_label_ids = torch.tensor([label for label in labels], dtype=torch.long)
-    all_input_ids = torch.tensor([f for f in feats], dtype=torch.long)
+    logging.info(f"Labels size: {len(labels)},  shape: {labels[0].shape}")
+
+    all_label_ids = torch.cat(labels, dim=0)
+    all_input_ids = torch.cat(feats, dim=0)
 
     # all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
     # all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
@@ -630,8 +652,9 @@ def result_to_file(result, file_name):
             writer.write("%s = %s\n" % (key, str(result[key])))
 
 
-def do_eval(model, task_name, eval_dataloader,
-            device, output_mode, eval_labels, tokenizer):
+def do_eval(
+    model, task_name, eval_dataloader, device, output_mode, eval_labels, tokenizer
+):
     eval_loss = 0
     nb_eval_steps = 0
     preds = []
@@ -641,8 +664,8 @@ def do_eval(model, task_name, eval_dataloader,
         batch_ = tuple(t.to(device) for t in batch_)
         with torch.no_grad():
             input_ids, label_ids = batch_
-
-            logits, _, _ = model(input_ids)
+            # logits, hidden_states, all_hidden_states, all_self_attentions
+            logits, _, _, _ = model(input_ids)
         # create eval loss and other metric required by the task
         if output_mode == "classification":
             loss_fct = CrossEntropyLoss()
@@ -651,21 +674,22 @@ def do_eval(model, task_name, eval_dataloader,
             loss_fct = MSELoss()
             tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
         elif output_mode == "generation":
-            loss_fct = CrossEntropyLoss()
-            tmp_eval_loss = loss_fct(logits.view(-1, logits.size(-1)), label_ids.view(-1))
-            # loss = torch.sum(
-            #     torch.nn.functional.log_softmax(logits, dim=-1)
-            #     * torch.nn.functional.one_hot(label_ids, num_classes=logits.shape[-1]),
-            #     dim=-1,
+            # loss_fct = CrossEntropyLoss()
+            # tmp_eval_loss = loss_fct(
+            #     logits.view(-1, logits.size(-1)), label_ids.view(-1)
             # )
+            tmp_eval_loss = torch.sum(
+                torch.nn.functional.log_softmax(logits[:, :-1, :], dim=-1)
+                * torch.nn.functional.one_hot(label_ids, num_classes=logits.shape[-1]),
+                dim=-1,
+            )
 
         eval_loss += tmp_eval_loss.mean().item()
         nb_eval_steps += 1
         if len(preds) == 0:
             preds.append(logits.detach().cpu().numpy())
         else:
-            preds[0] = np.append(
-                preds[0], logits.detach().cpu().numpy(), axis=0)
+            preds[0] = np.append(preds[0], logits.detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
 
@@ -678,134 +702,145 @@ def do_eval(model, task_name, eval_dataloader,
         preds = preds
 
     result = compute_metrics(task_name, preds, eval_labels.numpy(), tokenizer)
-    result['eval_loss'] = eval_loss
-    
+    result["eval_loss"] = eval_loss
+
     if orig_state is True:
-        model.train()    
+        model.train()
     return result
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--teacher_model",
-                        default=None,
-                        type=str,
-                        help="The teacher model dir.")
-    parser.add_argument("--student_model",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The student model dir.")
-    parser.add_argument("--task_name",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The name of the task to train.")
-    parser.add_argument("--output_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The output directory where the model predictions and checkpoints will be written.")
-    parser.add_argument("--cache_dir",
-                        default="",
-                        type=str,
-                        help="Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--max_seq_length",
-                        default=512,
-                        type=int,
-                        help="The maximum total input sequence length after WordPiece tokenization. \n"
-                             "Sequences longer than this will be truncated, and sequences shorter \n"
-                             "than this will be padded.")
-    parser.add_argument("--do_eval",
-                        action='store_true',
-                        help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--train_batch_size",
-                        default=32,
-                        type=int,
-                        help="Total batch size for training.")
-    parser.add_argument("--eval_batch_size",
-                        default=32,
-                        type=int,
-                        help="Total batch size for eval.")
-    parser.add_argument("--learning_rate",
-                        default=5e-5,
-                        type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument('--weight_decay', '--wd',
-                        default=1e-4,
-                        type=float,
-                        metavar='W',
-                        help='weight decay')
-    parser.add_argument("--num_train_epochs",
-                        default=3.0,
-                        type=float,
-                        help="Total number of training epochs to perform.")
-    parser.add_argument("--warmup_proportion",
-                        default=0.1,
-                        type=float,
-                        help="Proportion of training to perform linear learning rate warmup for. "
-                             "E.g., 0.1 = 10%% of training.")
-    parser.add_argument("--no_cuda",
-                        action='store_true',
-                        help="Whether not to use CUDA when available")
-    parser.add_argument('--seed',
-                        type=int,
-                        default=42,
-                        help="random seed for initialization")
-    parser.add_argument('--gradient_accumulation_steps',
-                        type=int,
-                        default=1,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--log_path',
-                        type=str,
-                        default=None,
-                        help="path to write important logs: teacher accuracy")
+    parser.add_argument(
+        "--data_dir",
+        default=None,
+        type=str,
+        required=True,
+        help="The input data dir. Should contain the .tsv files (or other data files) for the task.",
+    )
+    parser.add_argument(
+        "--teacher_model", default=None, type=str, help="The teacher model dir."
+    )
+    parser.add_argument(
+        "--student_model",
+        default=None,
+        type=str,
+        required=True,
+        help="The student model dir.",
+    )
+    parser.add_argument(
+        "--task_name",
+        default=None,
+        type=str,
+        required=True,
+        help="The name of the task to train.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        type=str,
+        required=True,
+        help="The output directory where the model predictions and checkpoints will be written.",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        default="",
+        type=str,
+        help="Where do you want to store the pre-trained models downloaded from s3",
+    )
+    parser.add_argument(
+        "--max_seq_length",
+        default=512,
+        type=int,
+        help="The maximum total input sequence length after WordPiece tokenization. \n"
+        "Sequences longer than this will be truncated, and sequences shorter \n"
+        "than this will be padded.",
+    )
+    parser.add_argument(
+        "--do_eval", action="store_true", help="Whether to run eval on the dev set."
+    )
+    parser.add_argument(
+        "--do_lower_case",
+        action="store_true",
+        help="Set this flag if you are using an uncased model.",
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        default=32,
+        type=int,
+        help="Total batch size for training.",
+    )
+    parser.add_argument(
+        "--eval_batch_size", default=32, type=int, help="Total batch size for eval."
+    )
+    parser.add_argument(
+        "--learning_rate",
+        default=5e-5,
+        type=float,
+        help="The initial learning rate for Adam.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        "--wd",
+        default=1e-4,
+        type=float,
+        metavar="W",
+        help="weight decay",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        default=3.0,
+        type=float,
+        help="Total number of training epochs to perform.",
+    )
+    parser.add_argument(
+        "--warmup_proportion",
+        default=0.1,
+        type=float,
+        help="Proportion of training to perform linear learning rate warmup for. "
+        "E.g., 0.1 = 10%% of training.",
+    )
+    parser.add_argument(
+        "--no_cuda", action="store_true", help="Whether not to use CUDA when available"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="random seed for initialization"
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
+    )
+    parser.add_argument(
+        "--log_path",
+        type=str,
+        default=None,
+        help="path to write important logs: teacher accuracy",
+    )
 
     # added arguments
-    parser.add_argument('--aug_train',
-                        action='store_true')
-    parser.add_argument('--eval_step',
-                        type=int,
-                        default=200)
-    parser.add_argument('--pred_distill',
-                        action='store_true')
-    parser.add_argument('--data_url',
-                        type=str,
-                        default="")
-    parser.add_argument('--temperature',
-                        type=float,
-                        default=1.)
-    parser.add_argument('--hidden_act',
-                        type=str)
-    parser.add_argument('--softmax_act',
-                        type=str)
-    parser.add_argument('--ablation_ratio',
-                        type=float,
-                        default=-1)
-    parser.add_argument('--ablation_init',
-                        action="store_true")
-    
-    # quantization arguments
-    parser.add_argument('--quant', default=False, action="store_true")
+    parser.add_argument("--aug_train", action="store_true")
+    parser.add_argument("--eval_step", type=int, default=200)
+    parser.add_argument("--pred_distill", action="store_true")
+    parser.add_argument("--data_url", type=str, default="")
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--hidden_act", type=str)
+    parser.add_argument("--softmax_act", type=str)
+    parser.add_argument("--ablation_ratio", type=float, default=-1)
+    parser.add_argument("--ablation_init", action="store_true")
 
+    # quantization arguments
+    parser.add_argument("--quant", default=False, action="store_true")
 
     args = parser.parse_args()
-    logger.info('The args: {}'.format(args))
+    logger.info("The args: {}".format(args))
 
     if args.quant:
         from transformer.quant_gpt2_modeling import GPT2LMHeadModel as student_gpt2
 
     else:
         from transformer.gpt2_modeling import GPT2LMHeadModel as student_gpt2
-
 
     processors = {
         "cola": ColaProcessor,
@@ -835,7 +870,6 @@ def main():
         "wiki": "generation",
     }
 
-
     # intermediate distillation default parameters
     default_params = {
         "cola": {"num_train_epochs": 50, "max_seq_length": 128},
@@ -847,7 +881,7 @@ def main():
         "qnli": {"num_train_epochs": 10, "max_seq_length": 128},
         "rte": {"num_train_epochs": 50, "max_seq_length": 128},
         "imdb": {"num_train_epochs": 30, "max_seq_length": 512},
-        "wiki": {"num_train_epochs": 30, "max_seq_length": 512},
+        "wiki": {"num_train_epochs": 30, "max_seq_length": 32},
     }
 
     acc_tasks = ["mnli", "mrpc", "sst2", "qqp", "qnli", "rte", "imdb"]
@@ -856,12 +890,16 @@ def main():
     gen_tasks = ["wiki"]
 
     # Prepare devices
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
+    )
     n_gpu = torch.cuda.device_count()
 
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt='%m/%d/%Y %H:%M:%S',
-                        level=logging.INFO)
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
 
     logger.info("device: {} n_gpu: {}".format(device, n_gpu))
 
@@ -874,7 +912,11 @@ def main():
 
     # Prepare task settings
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
+        raise ValueError(
+            "Output directory ({}) already exists and is not empty.".format(
+                args.output_dir
+            )
+        )
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
@@ -883,14 +925,15 @@ def main():
     if task_name in default_params:
         args.max_seq_length = default_params[task_name]["max_seq_length"]
 
-    #print(task_name, args.num_train_epochs)
+    # print(task_name, args.num_train_epochs)
     if not args.pred_distill and not args.do_eval:
         if task_name in default_params:
             args.num_train_epochs = default_params[task_name]["num_train_epochs"]
             if args.ablation_init:
                 args.num_train_epochs *= 10
                 print(f"training with {args.num_train_epochs} epochs")
-    #print(default_params, args.num_train_epochs)
+
+    logger.info("default params: {}".format(default_params))
 
     """
     Process data inputs
@@ -903,68 +946,131 @@ def main():
     # num_labels = len(label_list)
     output_mode = output_modes[task_name]
 
-
     train_dataset = datasets.load_from_disk(args.data_dir)["train"]
     eval_dataset = datasets.load_from_disk(args.data_dir)["validation"]
 
+    logger.info("Load dataset done.")
+
     # NOTE: hard code here args.student_model
-    tokenizer = GPT2Tokenizer.from_pretrained(args.student_model, do_lower_case=args.do_lower_case)
+    tokenizer = GPT2Tokenizer.from_pretrained(
+        args.student_model, do_lower_case=args.do_lower_case
+    )
     tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    logger.info("Load tokenizer done.")
 
     if not args.do_eval:
         if not args.aug_train:
-            train_examples = [text for text in train_dataset["text"] if text is not None and text != ""]
+            train_examples = [
+                text
+                for text in train_dataset["text"]
+                if text is not None and text != ""
+            ]
         else:
             train_examples = processor.get_aug_examples(args.data_dir)
         if args.ablation_ratio != -1:
             original_num = len(train_examples)
             args.ablation_num = int(original_num * args.ablation_ratio)
-            indices = np.random.choice(list(range(len(train_examples))), size=args.ablation_num, replace=False)
-            train_examples = [a for a in train_examples if train_examples.index(a) in indices]
-            args.num_train_epochs = int(original_num * args.num_train_epochs/ args.ablation_num)
+            # indices = np.random.choice(
+            #     list(range(len(train_examples))), size=args.ablation_num, replace=False
+            # )
+            # train_examples = [
+            #     a for a in train_examples if train_examples.index(a) in indices
+            # ]
+            train_examples = random.sample(train_examples, args.ablation_num)
+            args.num_train_epochs = int(
+                original_num * args.num_train_epochs / args.ablation_num
+            )
             print(f"training with {args.num_train_epochs} epochs")
             print(f"number of training examples: {len(train_examples)}")
         if args.gradient_accumulation_steps < 1:
-            raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-                args.gradient_accumulation_steps))
+            raise ValueError(
+                "Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
+                    args.gradient_accumulation_steps
+                )
+            )
 
-        args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
+        args.train_batch_size = (
+            args.train_batch_size // args.gradient_accumulation_steps
+        )
 
-        num_train_optimization_steps = int(
-            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+        num_train_optimization_steps = (
+            int(
+                len(train_examples)
+                / args.train_batch_size
+                / args.gradient_accumulation_steps
+            )
+            * args.num_train_epochs
+        )
 
-        train_features = convert_examples_to_features(train_examples, args.max_seq_length, tokenizer)
+        train_features = convert_examples_to_features(
+            train_examples, args.max_seq_length, tokenizer
+        )
         train_data, _ = get_tensor_data(train_features)
         train_sampler = RandomSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        train_dataloader = DataLoader(
+            train_data, sampler=train_sampler, batch_size=args.train_batch_size
+        )
 
-    eval_examples = [text for text in eval_dataset["text"] if text is not None and text != ""]
+    logger.info("Convert training data done.")
 
-    eval_features = convert_examples_to_features(eval_examples, args.max_seq_length, tokenizer)
+    eval_examples = [
+        text for text in eval_dataset["text"] if text is not None and text != ""
+    ]
+
+    eval_features = convert_examples_to_features(
+        eval_examples, args.max_seq_length, tokenizer
+    )
     eval_data, eval_labels = get_tensor_data(eval_features)
     eval_sampler = SequentialSampler(eval_data)
-    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_dataloader = DataLoader(
+        eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size
+    )
+    logger.info("Convert eval data done.")
 
     if not args.do_eval:
-        teacher_model = GPT2LMHeadModel.from_pretrained(args.teacher_model, activation_function="gelu_new", softmax_act="softmax")
+        teacher_model = GPT2LMHeadModel.from_pretrained(
+            args.teacher_model,
+            activation_function="gelu_new",
+            softmax_act="softmax",
+            output_hidden_states=True,
+        )
         teacher_model.to(device)
         # set teacher model to eval mode
-        #teacher_model.eval()
-    
-    result_t = do_eval(teacher_model, task_name, eval_dataloader, device, output_mode, eval_labels, tokenizer)
+        # teacher_model.eval()
+
+    result_t = do_eval(
+        teacher_model,
+        task_name,
+        eval_dataloader,
+        device,
+        output_mode,
+        eval_labels,
+        tokenizer,
+    )
     logger.info("***** Teacher evaluation *****")
     logger.info(result_t)
     with open(args.log_path, "a") as f:
         f.write(f"teacher: {result_t} \n")
-    
+
     """
     Student model load
     """
     if args.ablation_init:
-        student_model = student_gpt2.from_scratch(args.student_model, activation_function=args.hidden_act, softmax_act=args.softmax_act, fit_size=teacher_model.config.hidden_size)
+        student_model = student_gpt2.from_scratch(
+            args.student_model,
+            activation_function=args.hidden_act,
+            softmax_act=args.softmax_act,
+            fit_size=teacher_model.config.hidden_size,
+        )
         logger.info("student load from scratch")
     else:
-        student_model = student_gpt2.from_pretrained(args.student_model, activation_function=args.hidden_act, softmax_act=args.softmax_act, fit_size=teacher_model.config.hidden_size)
+        student_model = student_gpt2.from_pretrained(
+            args.student_model,
+            activation_function=args.hidden_act,
+            softmax_act=args.softmax_act,
+            fit_size=teacher_model.config.hidden_size,
+        )
         logger.info("student load from pretrained")
     student_model.to(device)
 
@@ -974,8 +1080,15 @@ def main():
         logger.info("  Batch size = %d", args.eval_batch_size)
 
         student_model.eval()
-        result = do_eval(student_model, task_name, eval_dataloader,
-                         device, output_mode, eval_labels, tokenizer)
+        result = do_eval(
+            student_model,
+            task_name,
+            eval_dataloader,
+            device,
+            output_mode,
+            eval_labels,
+            tokenizer,
+        )
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
@@ -991,30 +1104,42 @@ def main():
         param_optimizer = list(student_model.named_parameters())
         size = 0
         for n, p in student_model.named_parameters():
-            logger.info('n: {}'.format(n))
+            logger.info("n: {}".format(n))
             size += p.nelement()
 
-        logger.info('Total parameters: {}'.format(size))
-        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        logger.info("Total parameters: {}".format(size))
+        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            {
+                "params": [
+                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [
+                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
         ]
-        schedule = 'warmup_linear'
+        schedule = "warmup_linear"
         if not args.pred_distill:
-            schedule = 'none'
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             schedule=schedule,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
+            schedule = "none"
+        optimizer = BertAdam(
+            optimizer_grouped_parameters,
+            schedule=schedule,
+            lr=args.learning_rate,
+            warmup=args.warmup_proportion,
+            t_total=num_train_optimization_steps,
+        )
         # Prepare loss functions
         loss_mse = MSELoss()
 
         def soft_cross_entropy(predicts, targets):
             student_likelihood = torch.nn.functional.log_softmax(predicts, dim=-1)
             targets_prob = torch.nn.functional.softmax(targets, dim=-1)
-            return (- targets_prob * student_likelihood).mean()
+            return (-targets_prob * student_likelihood).mean()
 
         # Train and evaluate
         global_step = 0
@@ -1022,50 +1147,68 @@ def main():
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
 
         for epoch_ in trange(int(args.num_train_epochs), desc="Epoch"):
-            tr_loss = 0.
-            tr_att_loss = 0.
-            tr_rep_loss = 0.
-            tr_cls_loss = 0.
+            tr_loss = 0.0
+            tr_att_loss = 0.0
+            tr_rep_loss = 0.0
+            tr_cls_loss = 0.0
 
             student_model.train()
             nb_tr_examples, nb_tr_steps = 0, 0
 
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration", ascii=True)):
+            for step, batch in enumerate(
+                tqdm(train_dataloader, desc="Iteration", ascii=True)
+            ):
                 batch = tuple(t.to(device) for t in batch)
 
-                input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
+                input_ids, label_ids = batch
                 if input_ids.size()[0] != args.train_batch_size:
                     continue
 
-                att_loss = 0.
-                rep_loss = 0.
-                cls_loss = 0.
+                att_loss = 0.0
+                rep_loss = 0.0
+                cls_loss = 0.0
                 with torch.no_grad():
-                    teacher_logits, teacher_atts, teacher_reps = teacher_model(input_ids, segment_ids, input_mask)
+                    teacher_logits, teacher_atts, teacher_reps = teacher_model(
+                        input_ids
+                    )
 
-                student_logits, student_atts, student_reps = student_model(input_ids, segment_ids, input_mask,
-                                                                           is_student=True)
+                student_logits, student_atts, student_reps = student_model(
+                    input_ids, is_student=True
+                )
 
                 if not args.pred_distill:
                     teacher_layer_num = len(teacher_atts)
                     student_layer_num = len(student_atts)
                     assert teacher_layer_num % student_layer_num == 0
                     layers_per_block = int(teacher_layer_num / student_layer_num)
-                    new_teacher_atts = [teacher_atts[i * layers_per_block + layers_per_block - 1]
-                                        for i in range(student_layer_num)]
+                    new_teacher_atts = [
+                        teacher_atts[i * layers_per_block + layers_per_block - 1]
+                        for i in range(student_layer_num)
+                    ]
 
                     for student_att, teacher_att in zip(student_atts, new_teacher_atts):
-                        student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(device),
-                                                  student_att)
-                        teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(device),
-                                                  teacher_att)
+                        student_att = torch.where(
+                            student_att <= -1e2,
+                            torch.zeros_like(student_att).to(device),
+                            student_att,
+                        )
+                        teacher_att = torch.where(
+                            teacher_att <= -1e2,
+                            torch.zeros_like(teacher_att).to(device),
+                            teacher_att,
+                        )
 
                         tmp_loss = loss_mse(student_att, teacher_att)
                         att_loss += tmp_loss
 
-                    new_teacher_reps = [teacher_reps[i * layers_per_block] for i in range(student_layer_num + 1)]
+                    new_teacher_reps = [
+                        teacher_reps[i * layers_per_block]
+                        for i in range(student_layer_num + 1)
+                    ]
                     new_student_reps = student_reps
-                    for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
+                    for student_rep, teacher_rep in zip(
+                        new_student_reps, new_teacher_reps
+                    ):
                         # print(f"student_rep_shape: {student_rep.shape}")
                         # print(f"teacher_rep_shape: {teacher_rep.shape}")
                         tmp_loss = loss_mse(student_rep, teacher_rep)
@@ -1076,8 +1219,10 @@ def main():
                     tr_rep_loss += rep_loss.item()
                 else:
                     if output_mode == "classification":
-                        cls_loss = soft_cross_entropy(student_logits / args.temperature,
-                                                      teacher_logits / args.temperature)
+                        cls_loss = soft_cross_entropy(
+                            student_logits / args.temperature,
+                            teacher_logits / args.temperature,
+                        )
                     elif output_mode == "regression":
                         loss_mse = MSELoss()
                         cls_loss = loss_mse(student_logits.view(-1), label_ids.view(-1))
@@ -1116,13 +1261,20 @@ def main():
 
                     result = {}
                     if args.pred_distill:
-                        result = do_eval(student_model, task_name, eval_dataloader,
-                                         device, output_mode, eval_labels, num_labels)
-                    result['global_step'] = global_step
-                    result['cls_loss'] = cls_loss
-                    result['att_loss'] = att_loss
-                    result['rep_loss'] = rep_loss
-                    result['loss'] = loss
+                        result = do_eval(
+                            student_model,
+                            task_name,
+                            eval_dataloader,
+                            device,
+                            output_mode,
+                            eval_labels,
+                            num_labels,
+                        )
+                    result["global_step"] = global_step
+                    result["cls_loss"] = cls_loss
+                    result["att_loss"] = att_loss
+                    result["rep_loss"] = rep_loss
+                    result["loss"] = loss
 
                     result_to_file(result, output_eval_file)
 
@@ -1131,22 +1283,26 @@ def main():
                     else:
                         save_model = False
 
-                        if task_name in acc_tasks and result['acc'] > best_dev_acc:
-                            best_dev_acc = result['acc']
+                        if task_name in acc_tasks and result["acc"] > best_dev_acc:
+                            best_dev_acc = result["acc"]
                             save_model = True
 
-                        if task_name in corr_tasks and result['corr'] > best_dev_acc:
-                            best_dev_acc = result['corr']
+                        if task_name in corr_tasks and result["corr"] > best_dev_acc:
+                            best_dev_acc = result["corr"]
                             save_model = True
 
-                        if task_name in mcc_tasks and result['mcc'] > best_dev_acc:
-                            best_dev_acc = result['mcc']
+                        if task_name in mcc_tasks and result["mcc"] > best_dev_acc:
+                            best_dev_acc = result["mcc"]
                             save_model = True
 
                     if save_model:
                         logger.info("***** Save model *****")
 
-                        model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
+                        model_to_save = (
+                            student_model.module
+                            if hasattr(student_model, "module")
+                            else student_model
+                        )
 
                         model_name = WEIGHTS_NAME
                         # if not args.pred_distill:
@@ -1162,40 +1318,62 @@ def main():
                         if args.pred_distill and task_name == "mnli":
                             task_name = "mnli-mm"
                             processor = processors[task_name]()
-                            if not os.path.exists(args.output_dir + '-MM'):
-                                os.makedirs(args.output_dir + '-MM')
+                            if not os.path.exists(args.output_dir + "-MM"):
+                                os.makedirs(args.output_dir + "-MM")
 
                             eval_examples = processor.get_dev_examples(args.data_dir)
 
                             eval_features = convert_examples_to_features(
-                                eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
-                            eval_data, eval_labels = get_tensor_data(output_mode, eval_features)
+                                eval_examples,
+                                label_list,
+                                args.max_seq_length,
+                                tokenizer,
+                                output_mode,
+                            )
+                            eval_data, eval_labels = get_tensor_data(
+                                output_mode, eval_features
+                            )
 
                             logger.info("***** Running mm evaluation *****")
                             logger.info("  Num examples = %d", len(eval_examples))
                             logger.info("  Batch size = %d", args.eval_batch_size)
 
                             eval_sampler = SequentialSampler(eval_data)
-                            eval_dataloader = DataLoader(eval_data, sampler=eval_sampler,
-                                                         batch_size=args.eval_batch_size)
+                            eval_dataloader = DataLoader(
+                                eval_data,
+                                sampler=eval_sampler,
+                                batch_size=args.eval_batch_size,
+                            )
 
-                            result = do_eval(student_model, task_name, eval_dataloader,
-                                             device, output_mode, eval_labels, num_labels)
-                            result['global_step'] = global_step
+                            result = do_eval(
+                                student_model,
+                                task_name,
+                                eval_dataloader,
+                                device,
+                                output_mode,
+                                eval_labels,
+                                num_labels,
+                            )
+                            result["global_step"] = global_step
 
-                            tmp_output_eval_file = os.path.join(args.output_dir + '-MM', "eval_results.txt")
+                            tmp_output_eval_file = os.path.join(
+                                args.output_dir + "-MM", "eval_results.txt"
+                            )
                             result_to_file(result, tmp_output_eval_file)
 
-                            task_name = 'mnli'
+                            task_name = "mnli"
 
                         if oncloud:
-                            logging.info(mox.file.list_directory(args.output_dir, recursive=True))
-                            logging.info(mox.file.list_directory('.', recursive=True))
+                            logging.info(
+                                mox.file.list_directory(args.output_dir, recursive=True)
+                            )
+                            logging.info(mox.file.list_directory(".", recursive=True))
                             mox.file.copy_parallel(args.output_dir, args.data_url)
-                            mox.file.copy_parallel('.', args.data_url)
+                            mox.file.copy_parallel(".", args.data_url)
 
                     student_model.train()
                 # return 1
+
 
 if __name__ == "__main__":
     main()

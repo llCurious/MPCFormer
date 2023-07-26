@@ -65,6 +65,13 @@ from transformers.modeling_utils import (
     ModuleUtilsMixin,
 )
 
+log_format = "%(asctime)s %(message)s"
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format=log_format,
+    datefmt="%m/%d %I:%M:%S %p",
+)
 logger = logging.getLogger(__name__)
 
 GPT2_PRETRAINED_MODEL_ARCHIVE_LIST = [
@@ -199,6 +206,7 @@ except ImportError:
             x = (x - u) / torch.sqrt(s + self.variance_epsilon)
             return self.weight * x + self.bias
 
+
 class NewGELUActivation(nn.Module):
     """
     Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT). Also see
@@ -206,9 +214,25 @@ class NewGELUActivation(nn.Module):
     """
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
-    
-ACT2FN = {"gelu": gelu, "relu": torch.nn.functional.relu, "quad": quad, "gelu_new": NewGELUActivation()}
+        return (
+            0.5
+            * input
+            * (
+                1.0
+                + torch.tanh(
+                    math.sqrt(2.0 / math.pi)
+                    * (input + 0.044715 * torch.pow(input, 3.0))
+                )
+            )
+        )
+
+
+ACT2FN = {
+    "gelu": gelu,
+    "relu": torch.nn.functional.relu,
+    "quad": quad,
+    "gelu_new": NewGELUActivation(),
+}
 ACT2SFN = {
     "softmax": softmax,
     "2relu": softmax_2relu,
@@ -1720,9 +1744,9 @@ class GPT2PreTrainedModel(nn.Module, ModuleUtilsMixin):
         config.softmax_act = softmax_act
         # FIXME: hack
         config.add_cross_attention = kwargs.pop("add_cross_attention", False)
-        config.use_return_dict = kwargs.pop("use_return_dict", True)
+        config.use_return_dict = kwargs.pop("use_return_dict", False)
         config.output_attentions = kwargs.pop("output_attentions", False)
-        config.output_hidden_states = kwargs.pop("output_hidden_states", False)
+        config.output_hidden_states = kwargs.pop("output_hidden_states", True)
 
         logger.info("Model config {}".format(config))
         # Instantiate model.
@@ -2209,7 +2233,9 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
             )
-
+        # logging.info(
+        #     f"return dict: {return_dict}, output hidden: {output_hidden_states}"
+        # )
         if not return_dict:
             output = (lm_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output

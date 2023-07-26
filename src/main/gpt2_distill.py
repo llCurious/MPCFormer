@@ -18,6 +18,7 @@ parser.add_argument("--teacher_dir", default=model_path)
 parser.add_argument("--student_dir", default=model_path)
 parser.add_argument("--lr_hidden", type=float, default=5e-5)
 parser.add_argument("--lr_pred", type=float, default=1e-5)
+parser.add_argument("--ablation_ratio", type=float, default=-1)
 parser.add_argument("--bs", type=int, default=32)
 parser.add_argument("--hidden_act", type=str)
 parser.add_argument("--softmax_act", type=str)
@@ -28,6 +29,7 @@ args = parser.parse_args()
 task_name = args.task_name
 lr_hidden = args.lr_hidden
 lr_pred = args.lr_pred
+ablation_ratio = args.ablation_ratio
 bs = args.bs
 
 hidden_act = args.hidden_act
@@ -84,7 +86,8 @@ def distill_hidden():
     cmd = f"python gpt2_distill_helper.py --teacher_model {model_path} \
                --student_model {model_path} \
                --data_dir {data_dir} --task_name {task_name} --output_dir {output_dir} \
-               --max_seq_length 128 --train_batch_size {bs} --learning_rate {lr_hidden}\
+               --max_seq_length 32 --train_batch_size {bs} --learning_rate {lr_hidden}\
+               --ablation_ratio {ablation_ratio} \
                --do_lower_case --log_path {log_path} --hidden_act {hidden_act} --softmax_act {softmax_act}"
     if args.quant:
         cmd += " --quant"
