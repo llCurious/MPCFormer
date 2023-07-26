@@ -6,13 +6,22 @@ from transformers import (
 import sys
 sys.path.append("..")
 
-from main.transformer.quant_gpt2_modeling import (
+from main.transformer.gpt2_modeling import (
     GPT2LMHeadModel
 )
 import datasets
 import numpy as np
 import torch
 import os
+
+import logging
+log_format = '%(asctime)s %(message)s'
+logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                    format=log_format, datefmt='%m/%d %I:%M:%S %p')
+fh = logging.FileHandler('gpt2-eval-test.log')
+fh.setFormatter(logging.Formatter(log_format))
+logging.getLogger().addHandler(fh)
+logger = logging.getLogger()
 
 batch_num = 1
 
@@ -27,6 +36,7 @@ tokenizer = GPT2Tokenizer.from_pretrained(model_path)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # pretrained_model = GPT2LMHeadModel.from_pretrained(model_path, config=model_config) # raw version
+# print(model_config)
 pretrained_model = GPT2LMHeadModel.from_pretrained(model_path, activation_function='gelu_new', softmax_act='softmax') # mpc former version
 data_path = os.path.join(
     os.path.expanduser("~"), ".cache/huggingface/datasets/wikitext"
