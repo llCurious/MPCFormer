@@ -66,469 +66,6 @@ except:
     oncloud = False
 
 
-class InputExample(object):
-    """A single training/test example for simple sequence classification."""
-
-    def __init__(self, guid, text_a, text_b=None, label=None):
-        """Constructs a InputExample.
-
-        Args:
-            guid: Unique id for the example.
-            text_a: string. The untokenized text of the first sequence. For single
-            sequence tasks, only this sequence must be specified.
-            text_b: (Optional) string. The untokenized text of the second sequence.
-            Only must be specified for sequence pair tasks.
-            label: (Optional) string. The label of the example. This should be
-            specified for train and dev examples, but not for test examples.
-        """
-        self.guid = guid
-        self.text_a = text_a
-        self.text_b = text_b
-        self.label = label
-
-
-class InputFeatures(object):
-    """A single set of features of data."""
-
-    def __init__(self, input_ids, input_mask, segment_ids, label_id, seq_length=None):
-        self.input_ids = input_ids
-        self.input_mask = input_mask
-        self.segment_ids = segment_ids
-        self.seq_length = seq_length
-        self.label_id = label_id
-
-
-class DataProcessor(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a tab separated value file."""
-        with open(input_file, "r", encoding="utf-8") as f:
-            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                if sys.version_info[0] == 2:
-                    line = list(unicode(cell, "utf-8") for cell in line)
-                lines.append(line)
-            return lines
-
-
-class ImdbProcessor(DataProcessor):
-    def __init__(
-        self,
-    ):
-        super().__init__()
-        from datasets import load_dataset
-
-        self.raw_datasets = load_dataset("imdb")
-
-    def get_train_examples(self, data_dir):
-        train_dataset = self.raw_datasets["train"]
-        return self._create_examples(train_dataset, "train")
-
-    def get_dev_examples(self, data_dir):
-        test_dataset = self.raw_datasets["test"]
-        return self._create_examples(test_dataset, "eval")
-
-    def get_labels(
-        self,
-    ):
-        return [0, 1]
-        # return self.raw_datasets["train"].features["label"].names
-
-    def _create_examples(self, dataset, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(dataset):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line["text"]
-            label = line["label"]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
-            )
-        return examples
-
-
-class MrpcProcessor(DataProcessor):
-    """Processor for the MRPC data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            text_b = line[4]
-            label = line[0]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class MnliProcessor(DataProcessor):
-    """Processor for the MultiNLI data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")), "dev_matched"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        # return ["contradiction", "entailment", "neutral"]
-        return ["entailment", "neutral", "contradiction"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[8]
-            text_b = line[9]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class MnliMismatchedProcessor(MnliProcessor):
-    """Processor for the MultiNLI Mismatched data set (GLUE version)."""
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev_mismatched.tsv")), "dev_matched"
-        )
-
-
-class ColaProcessor(DataProcessor):
-    """Processor for the CoLA data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            label = line[1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
-            )
-        return examples
-
-
-class Sst2Processor(DataProcessor):
-    """Processor for the SST-2 data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[0]
-            label = line[1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label)
-            )
-        return examples
-
-
-class StsbProcessor(DataProcessor):
-    """Processor for the STS-B data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return [None]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[7]
-            text_b = line[8]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class QqpProcessor(DataProcessor):
-    """Processor for the STS-B data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            try:
-                text_a = line[3]
-                text_b = line[4]
-                label = line[5]
-            except IndexError:
-                continue
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class QnliProcessor(DataProcessor):
-    """Processor for the STS-B data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev_matched"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["entailment", "not_entailment"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[1]
-            text_b = line[2]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class RteProcessor(DataProcessor):
-    """Processor for the RTE data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_aug_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["entailment", "not_entailment"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[1]
-            text_b = line[2]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
-class WnliProcessor(DataProcessor):
-    """Processor for the WNLI data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train"
-        )
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev"
-        )
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for i, line in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[1]
-            text_b = line[2]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-            )
-        return examples
-
-
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
 
@@ -547,18 +84,6 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
         features.append(encoded_inputs)
         labels.append(label)
     return features, labels
-
-
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
-    """Truncates a sequence pair in place to the maximum length."""
-    while True:
-        total_length = len(tokens_a) + len(tokens_b)
-        if total_length <= max_length:
-            break
-        if len(tokens_a) > len(tokens_b):
-            tokens_a.pop()
-        else:
-            tokens_b.pop()
 
 
 """
@@ -674,20 +199,25 @@ def do_eval(
             loss_fct = MSELoss()
             tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
         elif output_mode == "generation":
-            # loss_fct = CrossEntropyLoss()
-            # tmp_eval_loss = loss_fct(
-            #     logits.view(-1, logits.size(-1)), label_ids.view(-1)
+            # NOTE: from dong
+            # tmp_eval_loss = torch.sum(
+            #     torch.nn.functional.log_softmax(logits[:, :-1, :], dim=-1)
+            #     * torch.nn.functional.one_hot(label_ids, num_classes=logits.shape[-1]),
+            #     dim=-1,
             # )
-            tmp_eval_loss = torch.sum(
-                torch.nn.functional.log_softmax(logits[:, :-1, :], dim=-1)
-                * torch.nn.functional.one_hot(label_ids, num_classes=logits.shape[-1]),
-                dim=-1,
+            # NOTE: from huggingface
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = label_ids[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            tmp_eval_loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
             )
 
         eval_loss += tmp_eval_loss.mean().item()
         nb_eval_steps += 1
         if len(preds) == 0:
-            preds.append(logits.detach().cpu().numpy())
+            preds.append(logits.detach().cpu())
         else:
             preds[0] = np.append(preds[0], logits.detach().cpu().numpy(), axis=0)
 
@@ -701,7 +231,7 @@ def do_eval(
     elif output_mode == "generation":
         preds = preds
 
-    result = compute_metrics(task_name, preds, eval_labels.numpy(), tokenizer)
+    result = compute_metrics(task_name, preds, eval_labels, tokenizer)
     result["eval_loss"] = eval_loss
 
     if orig_state is True:
@@ -841,20 +371,6 @@ def main():
 
     else:
         from transformer.gpt2_modeling import GPT2LMHeadModel as student_gpt2
-
-    processors = {
-        "cola": ColaProcessor,
-        "mnli": MnliProcessor,
-        "mnli-mm": MnliMismatchedProcessor,
-        "mrpc": MrpcProcessor,
-        "sst2": Sst2Processor,
-        "stsb": StsbProcessor,
-        "qqp": QqpProcessor,
-        "qnli": QnliProcessor,
-        "rte": RteProcessor,
-        "wnli": WnliProcessor,
-        "imdb": ImdbProcessor,
-    }
 
     output_modes = {
         "cola": "classification",
@@ -1168,11 +684,11 @@ def main():
                 rep_loss = 0.0
                 cls_loss = 0.0
                 with torch.no_grad():
-                    teacher_logits, teacher_atts, teacher_reps = teacher_model(
+                    teacher_logits, _, teacher_reps, teacher_atts = teacher_model(
                         input_ids
                     )
 
-                student_logits, student_atts, student_reps = student_model(
+                student_logits, _, student_reps, student_atts = student_model(
                     input_ids, is_student=True
                 )
 
@@ -1226,6 +742,16 @@ def main():
                     elif output_mode == "regression":
                         loss_mse = MSELoss()
                         cls_loss = loss_mse(student_logits.view(-1), label_ids.view(-1))
+                    elif output_mode == "generation":
+                        # NOTE: from huggingface
+                        shift_logits = student_logits[..., :-1, :].contiguous()
+                        shift_labels = label_ids[..., 1:].contiguous()
+                        # Flatten the tokens
+                        loss_fct = CrossEntropyLoss()
+                        cls_loss = loss_fct(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1),
+                        )
 
                     loss = cls_loss
                     tr_cls_loss += cls_loss.item()
@@ -1268,7 +794,7 @@ def main():
                             device,
                             output_mode,
                             eval_labels,
-                            num_labels,
+                            tokenizer,
                         )
                     result["global_step"] = global_step
                     result["cls_loss"] = cls_loss
@@ -1295,6 +821,10 @@ def main():
                             best_dev_acc = result["mcc"]
                             save_model = True
 
+                        if task_name in gen_tasks and result["ppl"] < best_dev_acc:
+                            best_dev_acc = result["ppl"]
+                            save_model = True
+
                     if save_model:
                         logger.info("***** Save model *****")
 
@@ -1314,55 +844,6 @@ def main():
                         model_to_save.config.to_json_file(output_config_file)
                         tokenizer.save_vocabulary(args.output_dir)
 
-                        # Test mnli-mm
-                        if args.pred_distill and task_name == "mnli":
-                            task_name = "mnli-mm"
-                            processor = processors[task_name]()
-                            if not os.path.exists(args.output_dir + "-MM"):
-                                os.makedirs(args.output_dir + "-MM")
-
-                            eval_examples = processor.get_dev_examples(args.data_dir)
-
-                            eval_features = convert_examples_to_features(
-                                eval_examples,
-                                label_list,
-                                args.max_seq_length,
-                                tokenizer,
-                                output_mode,
-                            )
-                            eval_data, eval_labels = get_tensor_data(
-                                output_mode, eval_features
-                            )
-
-                            logger.info("***** Running mm evaluation *****")
-                            logger.info("  Num examples = %d", len(eval_examples))
-                            logger.info("  Batch size = %d", args.eval_batch_size)
-
-                            eval_sampler = SequentialSampler(eval_data)
-                            eval_dataloader = DataLoader(
-                                eval_data,
-                                sampler=eval_sampler,
-                                batch_size=args.eval_batch_size,
-                            )
-
-                            result = do_eval(
-                                student_model,
-                                task_name,
-                                eval_dataloader,
-                                device,
-                                output_mode,
-                                eval_labels,
-                                num_labels,
-                            )
-                            result["global_step"] = global_step
-
-                            tmp_output_eval_file = os.path.join(
-                                args.output_dir + "-MM", "eval_results.txt"
-                            )
-                            result_to_file(result, tmp_output_eval_file)
-
-                            task_name = "mnli"
-
                         if oncloud:
                             logging.info(
                                 mox.file.list_directory(args.output_dir, recursive=True)
@@ -1372,7 +853,6 @@ def main():
                             mox.file.copy_parallel(".", args.data_url)
 
                     student_model.train()
-                # return 1
 
 
 if __name__ == "__main__":
