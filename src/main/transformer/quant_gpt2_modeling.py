@@ -1745,7 +1745,7 @@ class GPT2PreTrainedModel(nn.Module, ModuleUtilsMixin):
         # FIXME: hack
         config.add_cross_attention = kwargs.pop("add_cross_attention", False)
         config.use_return_dict = kwargs.pop("use_return_dict", False)
-        config.output_attentions = kwargs.pop("output_attentions", False)
+        config.output_attentions = kwargs.pop("output_attentions", True)
         config.output_hidden_states = kwargs.pop("output_hidden_states", True)
 
         logger.info("Model config {}".format(config))

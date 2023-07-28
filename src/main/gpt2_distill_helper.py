@@ -95,9 +95,9 @@ def simple_ppl(preds, labels, tokenizer):
     loss = torch.sum(
         torch.nn.functional.log_softmax(preds, dim=-1)
         * torch.nn.functional.one_hot(labels, num_classes=preds.shape[-1]),
-        dim=-1,
     )
     count = torch.sum(labels != tokenizer.pad_token_id)
+    logging.info(f"loss: {loss}, count: {count}")
     perplexity = torch.exp(-loss / count)
     return perplexity
 
@@ -207,7 +207,7 @@ def do_eval(
             # )
             # NOTE: from huggingface
             shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = label_ids[..., 1:].contiguous()
+            shift_labels = label_ids.contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             tmp_eval_loss = loss_fct(
@@ -217,13 +217,14 @@ def do_eval(
         eval_loss += tmp_eval_loss.mean().item()
         nb_eval_steps += 1
         if len(preds) == 0:
-            preds.append(logits.detach().cpu())
+            preds.append(logits[..., :-1, :].detach().cpu())
         else:
-            preds[0] = np.append(preds[0], logits.detach().cpu().numpy(), axis=0)
+            preds[0] = torch.cat((preds[0], logits[..., :-1, :].detach().cpu()))
 
     eval_loss = eval_loss / nb_eval_steps
-
     preds = preds[0]
+    logging.info(f"pred type: {type(preds)}")
+
     if output_mode == "classification":
         preds = np.argmax(preds, axis=1)
     elif output_mode == "regression":
@@ -231,6 +232,7 @@ def do_eval(
     elif output_mode == "generation":
         preds = preds
 
+    # logging.info(f"pred type: {type(preds)}")
     result = compute_metrics(task_name, preds, eval_labels, tokenizer)
     result["eval_loss"] = eval_loss
 
@@ -397,7 +399,7 @@ def main():
         "qnli": {"num_train_epochs": 10, "max_seq_length": 128},
         "rte": {"num_train_epochs": 50, "max_seq_length": 128},
         "imdb": {"num_train_epochs": 30, "max_seq_length": 512},
-        "wiki": {"num_train_epochs": 30, "max_seq_length": 32},
+        "wiki": {"num_train_epochs": 1, "max_seq_length": 32},
     }
 
     acc_tasks = ["mnli", "mrpc", "sst2", "qqp", "qnli", "rte", "imdb"]
@@ -555,19 +557,20 @@ def main():
         # set teacher model to eval mode
         # teacher_model.eval()
 
-    result_t = do_eval(
-        teacher_model,
-        task_name,
-        eval_dataloader,
-        device,
-        output_mode,
-        eval_labels,
-        tokenizer,
-    )
-    logger.info("***** Teacher evaluation *****")
-    logger.info(result_t)
-    with open(args.log_path, "a") as f:
-        f.write(f"teacher: {result_t} \n")
+    # FIXME: eval is currently bypassed
+    # result_t = do_eval(
+    #     teacher_model,
+    #     task_name,
+    #     eval_dataloader,
+    #     device,
+    #     output_mode,
+    #     eval_labels,
+    #     tokenizer,
+    # )
+    # logger.info("***** Teacher evaluation *****")
+    # logger.info(result_t)
+    # with open(args.log_path, "a") as f:
+    #     f.write(f"teacher: {result_t} \n")
 
     """
     Student model load
@@ -577,7 +580,8 @@ def main():
             args.student_model,
             activation_function=args.hidden_act,
             softmax_act=args.softmax_act,
-            fit_size=teacher_model.config.hidden_size,
+            output_hidden_states=True,
+            # fit_size=teacher_model.config.hidden_size,
         )
         logger.info("student load from scratch")
     else:
@@ -585,7 +589,8 @@ def main():
             args.student_model,
             activation_function=args.hidden_act,
             softmax_act=args.softmax_act,
-            fit_size=teacher_model.config.hidden_size,
+            output_hidden_states=True,
+            # fit_size=teacher_model.config.hidden_size,
         )
         logger.info("student load from pretrained")
     student_model.to(device)
@@ -668,7 +673,9 @@ def main():
             tr_rep_loss = 0.0
             tr_cls_loss = 0.0
 
+            # FIXME: hack test. reference: https://github.com/huggingface/transformers/blob/main/examples/research_projects/distillation/distiller.py#L336-L337
             student_model.train()
+            teacher_model.eval()
             nb_tr_examples, nb_tr_steps = 0, 0
 
             for step, batch in enumerate(
@@ -689,8 +696,8 @@ def main():
                     )
 
                 student_logits, _, student_reps, student_atts = student_model(
-                    input_ids, is_student=True
-                )
+                    input_ids
+                ) # NOTE: the is_student param is deleted
 
                 if not args.pred_distill:
                     teacher_layer_num = len(teacher_atts)
@@ -716,6 +723,13 @@ def main():
 
                         tmp_loss = loss_mse(student_att, teacher_att)
                         att_loss += tmp_loss
+                    
+                    # logging.info(f'Layers per block: {layers_per_block}')
+                    # logging.info(f'teacher train: {teacher_model.training}')
+                    # logging.info(f'student train: {student_model.training}')
+                    # logging.info(f'teacher-student logits mseloss: {loss_mse(student_logits, teacher_logits)}')
+                    # logging.info(f'student logits: {student_logits[0, :10]}')
+                    # logging.info(f'teacher logits: {teacher_logits[0, :10]}')
 
                     new_teacher_reps = [
                         teacher_reps[i * layers_per_block]
@@ -728,11 +742,15 @@ def main():
                         # print(f"student_rep_shape: {student_rep.shape}")
                         # print(f"teacher_rep_shape: {teacher_rep.shape}")
                         tmp_loss = loss_mse(student_rep, teacher_rep)
+                        # logging.info(f'teacher-student rep mseloss: {loss_mse(student_rep, teacher_rep)}')
+                        # logging.info(f'student rep: {student_rep[0, :10]}')
+                        # logging.info(f'teacher rep: {teacher_rep[0, :10]}')
                         rep_loss += tmp_loss
 
                     loss = rep_loss + att_loss
                     tr_att_loss += att_loss.item()
                     tr_rep_loss += rep_loss.item()
+                    # raise Exception('return')
                 else:
                     if output_mode == "classification":
                         cls_loss = soft_cross_entropy(
@@ -745,7 +763,7 @@ def main():
                     elif output_mode == "generation":
                         # NOTE: from huggingface
                         shift_logits = student_logits[..., :-1, :].contiguous()
-                        shift_labels = label_ids[..., 1:].contiguous()
+                        shift_labels = label_ids.contiguous()
                         # Flatten the tokens
                         loss_fct = CrossEntropyLoss()
                         cls_loss = loss_fct(
