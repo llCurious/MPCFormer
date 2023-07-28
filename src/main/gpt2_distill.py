@@ -22,6 +22,7 @@ parser.add_argument("--ablation_ratio", type=float, default=-1)
 parser.add_argument("--bs", type=int, default=32)
 parser.add_argument("--hidden_act", type=str)
 parser.add_argument("--softmax_act", type=str)
+parser.add_argument("--max_seq_length", type=int, default=32)
 
 parser.add_argument("--quant", default=False, action="store_true")
 
@@ -31,6 +32,7 @@ lr_hidden = args.lr_hidden
 lr_pred = args.lr_pred
 ablation_ratio = args.ablation_ratio
 bs = args.bs
+max_seq_length = args.max_seq_length
 
 hidden_act = args.hidden_act
 softmax_act = args.softmax_act
@@ -86,7 +88,7 @@ def distill_hidden():
     cmd = f"python gpt2_distill_helper.py --teacher_model {model_path} \
                --student_model {model_path} \
                --data_dir {data_dir} --task_name {task_name} --output_dir {output_dir} \
-               --max_seq_length 32 --train_batch_size {bs} --learning_rate {lr_hidden}\
+               --max_seq_length {max_seq_length} --train_batch_size {bs} --learning_rate {lr_hidden}\
                --ablation_ratio {ablation_ratio} \
                --do_lower_case --log_path {log_path} --hidden_act {hidden_act} --softmax_act {softmax_act}"
     if args.quant:
@@ -111,7 +113,10 @@ def distill_pred():
 
     output_dir_stage2 = output_dir + "_stage2"
     result_path = os.path.join(output_dir_stage2, "eval_results.json")
-    data_dir = os.path.join("glue_data", task_name)
+    data_dir = os.path.join(
+        os.path.expanduser("~"), ".cache/huggingface/datasets/wikitext"
+    )
+
     cmd = f"python gpt2_distill_helper.py --pred_distill  \
                --teacher_model {teacher_dir} \
                --student_model {output_dir} \
@@ -122,7 +127,7 @@ def distill_pred():
                --learning_rate {lr_pred}  \
                --num_train_epochs  5 \
                --eval_step 100 \
-               --max_seq_length 128 \
+               --max_seq_length {max_seq_length} \
                --train_batch_size {bs} --log_path {log_path} \
                --hidden_act {hidden_act} \
                --softmax_act {softmax_act}"
@@ -136,7 +141,7 @@ def distill_pred():
 
 def distill():
     distill_hidden()
-    # distill_pred()
+    distill_pred()
 
 if __name__ == "__main__":
     distill()
