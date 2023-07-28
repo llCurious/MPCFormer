@@ -37,7 +37,7 @@ tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # pretrained_model = GPT2LMHeadModel.from_pretrained(model_path, config=model_config) # raw version
 # print(model_config)
-pretrained_model = GPT2LMHeadModel.from_pretrained(model_path, activation_function='gelu_new', softmax_act='softmax') # mpc former version
+pretrained_model = GPT2LMHeadModel.from_pretrained(model_path, activation_function='gelu_new', softmax_act='softmax', use_return_dict=True) # mpc former version
 data_path = os.path.join(
     os.path.expanduser("~"), ".cache/huggingface/datasets/wikitext"
 )
@@ -69,9 +69,13 @@ def calculate_newToken(params, input_ids, new_token=1):
 
 
 def calculate_logits(model, input_ids):
+    model.eval()
     outputs = model(input_ids=input_ids)
     logits = outputs.logits[:, :-1, :]
     # logits = logits.reshape(batch_num, -1)
+    # print(logits[:, :10])
+    hidden_states = outputs.hidden_states
+    # print(hidden_states)
     return logits
 
 
