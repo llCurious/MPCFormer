@@ -967,7 +967,7 @@ class IntSoftmax(nn.Module):
         scaling_factor = exp_scaling_factor / 2**self.n
         return exp_int, scaling_factor
 
-    def forward(self, x, scaling_factor=None, dim=-1):
+    def forward(self, x, mask=None, scaling_factor=None, dim=-1):
         if self.quant_mode == "none":
             return utils.softmax(x, dim=-1, onnx_trace=False), None
 
