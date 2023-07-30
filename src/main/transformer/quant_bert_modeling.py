@@ -1231,12 +1231,15 @@ class BertSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        if config.softmax_act == "quan_softmax":
+        # input \in {quan_2relu, quan_raw}
+        if config.softmax_act.startswith("quan"):
+            softmax_mode = config.softmax_act.split("_")[-1]
             self.softmax_act = IntSoftmax(
-                FM_BIT_SMALL, "symmetric", FRACTION_BIT_SMALL, softmax_mode="2relu"
+                FM_BIT_SMALL, "symmetric", FRACTION_BIT_SMALL, softmax_mode=softmax_mode
             )
         else:
             self.softmax_act = ACT2SFN[config.softmax_act]
+        
         self.softmax_type = config.softmax_act
         if config.log_path is not None:
             with open(config.log_path, "a") as f:
@@ -1275,7 +1278,7 @@ class BertSelfAttention(nn.Module):
         )
         attention_mask_zero_one = 1 - attention_mask_zero_one
         # print(torch.sum(attention_mask_zero_one))
-        if self.softmax_type in ["2quad"]:
+        if "2quad" in self.softmax_type:
             attention_probs = self.softmax_act(
                 attention_scores, attention_mask_zero_one, dim=-1
             )  # nn.Softmax(dim=-1)(attention_scores)
