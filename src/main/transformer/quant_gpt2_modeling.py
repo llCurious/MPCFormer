@@ -162,18 +162,18 @@ def quad(x):
     return 0.125 * torch.square(x) + 0.25 * x + 0.5
 
 
-def softmax(scores, dim):
+def softmax(scores, mask, dim):
     return torch.nn.functional.softmax(scores, dim)
 
 
-def softmax_2relu(scores, dim, eps=1e-12):
+def softmax_2relu(scores, mask, dim, eps=1e-12):
     relu = torch.nn.functional.relu(scores)
     reduce_dim = scores.shape[dim]
     out = (relu + eps / reduce_dim) / (torch.sum(relu, dim=dim, keepdims=True) + eps)
     return out
 
 
-def softmax_2linear(scores, dim):
+def softmax_2linear(scores, mask, dim):
     out = scores / (torch.sum(scores, dim=dim, keepdims=True))
     return out
 
@@ -238,7 +238,6 @@ ACT2SFN = {
     "2relu": softmax_2relu,
     "2quad": softmax_2quad,
 }
-NORM = {"layer_norm": BertLayerNorm}
 
 DEBUG = False
 
@@ -376,6 +375,151 @@ class QuantLinear(nn.Module):
             print(f"Linear Output: {output[:5, :5]}")
         return (
             F.linear(x_int, weight=self.weight_integer, bias=self.bias_integer)
+            * bias_scaling_factor
+        )
+
+class QuantConv1D(nn.Module):
+    """
+    Class to quantize weights of given Conv1D layer
+
+    Parameters:
+    ----------
+    weight_bit : int
+        Bitwidth for quantized weights.
+    bias_bit : int, default None
+        Bitwidth for quantized bias.
+    per_channel : bool, default False
+        Whether to use channel-wise quantization.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    """
+
+    def __init__(
+        self,
+        nf,
+        nx,
+        weight_bit,
+        bias_bit=None,
+        per_channel=False,
+        quant_mode="none",
+        fraction_bit=10,
+    ):
+        super(QuantConv1D, self).__init__()
+        # init from standard Conv1D
+        self.nf = nf
+        self.nx = nx
+        self.weight = nn.Parameter(torch.empty(nx, nf))
+        self.bias = nn.Parameter(torch.zeros(nf))
+        nn.init.normal_(self.weight, std=0.02)
+
+        self.weight_bit = weight_bit
+        self.quant_mode = quant_mode
+        self.per_channel = per_channel
+        self.bias_bit = bias_bit
+        self.quantize_bias = False if bias_bit is None else True
+        self.quant_mode = quant_mode
+        self.percentile_mode = False
+
+        self.fraction_bit = fraction_bit
+
+        if self.quant_mode == "none":
+            pass
+        elif self.quant_mode == "symmetric":
+            self.weight_function = SymmetricQuantFunction.apply
+        elif self.quant_mode == "asymmetric":
+            raise NotImplementedError("unsupported quant mode: {}".format(quant_mode))
+        else:
+            raise ValueError("unknown quant mode: {}".format(self.quant_mode))
+
+    def __repr__(self):
+        s = super(QuantConv1D, self).__repr__()
+        s = (
+            "("
+            + s
+            + " weight_bit={}, quant_mode={})".format(self.weight_bit, self.quant_mode)
+        )
+        return s
+
+    def set_param(self, conv1d):
+        self.weight = Parameter(conv1d.weight.data.clone())
+        self.register_buffer("fc_scaling_factor", torch.zeros(self.nf))
+        self.register_buffer("weight_integer", torch.zeros_like(self.weight))
+        try:
+            self.bias = Parameter(conv1d.bias.data.clone())
+        except AttributeError:
+            self.bias = None
+        self.register_buffer("bias_integer", torch.zeros_like(self.bias))
+
+    def fix(self):
+        pass
+
+    def unfix(self):
+        pass
+
+    def _conv1d(self, x, weight, bias):
+        size_out = x.size()[:-1] + (self.nf,)
+        x = torch.addmm(bias, x.view(-1, x.size(-1)), weight)
+        x = x.view(size_out)
+        return x
+    
+    def forward(self, x, prev_act_scaling_factor=None):
+        """
+        using quantized weights to forward activation x
+        """
+        if self.quant_mode == "none":
+            return self._conv1d(x, weight=self.weight, bias=self.bias), None
+
+        # x / prev_act_scaling_factor = int
+        assert self.quant_mode == "symmetric", "unsupported quant mode: {}".format(
+            self.quant_mode
+        )
+
+        # assert that prev_act_scaling_factor is a scalar tensor
+        # e.g. all input tensors have the same scalar factor
+        prev_act_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).to(
+            x.device
+        )
+        assert (
+            prev_act_scaling_factor
+            is not None
+            # and prev_act_scaling_factor.shape == (1,)
+        )
+
+        w = self.weight
+        w_transform = w.data.detach()
+        if self.per_channel:
+            w_min, _ = torch.min(w_transform, dim=1, out=None)
+            w_max, _ = torch.max(w_transform, dim=1, out=None)
+        else:
+            w_min = w_transform.min().expand(1)
+            w_max = w_transform.max().expand(1)
+
+        # self.fc_scaling_factor = symmetric_linear_quantization_params(
+        #         self.weight_bit, w_min, w_max, self.per_channel)
+        self.fc_scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
+        self.weight_integer = self.weight_function(
+            self.weight, self.weight_bit, self.percentile_mode, self.fc_scaling_factor
+        )
+
+        bias_scaling_factor = self.fc_scaling_factor * prev_act_scaling_factor
+
+        self.bias_integer = self.weight_function(
+            self.bias, self.bias_bit, False, bias_scaling_factor
+        )
+
+        prev_act_scaling_factor = prev_act_scaling_factor.view(1, -1)
+        x_int = x / prev_act_scaling_factor
+
+        if DEBUG:
+            target = self._conv1d(x, weight=self.weight, bias=self.bias)
+            output = (
+                self._conv1d(x_int, weight=self.weight_integer, bias=self.bias_integer)
+                * bias_scaling_factor
+            )
+            print(f"Conv1D Target: {target[:5, :5]}")
+            print(f"Conv1D Output: {output[:5, :5]}")
+        return (
+            self._conv1d(x_int, weight=self.weight_integer, bias=self.bias_integer)
             * bias_scaling_factor
         )
 
@@ -842,7 +986,7 @@ class IntGELU(nn.Module):
         force_dequant="none",
         fraction_bit=10,
         act_bit=31,
-        gelu_type="mpcformer",
+        gelu_type="quad",
     ):
         super(IntGELU, self).__init__()
         self.register_buffer("input_scaling_factor", torch.ones(1))
@@ -923,7 +1067,7 @@ class IntGELU(nn.Module):
         scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
         x_int = x / scaling_factor
 
-        if self.gelu_type == "intglue":
+        if self.gelu_type == "raw":
             sigmoid_int, sigmoid_scaling_factor = self.int_erf(
                 x_int, scaling_factor / self.k
             )
@@ -932,7 +1076,7 @@ class IntGELU(nn.Module):
 
             x_int = x_int * (sigmoid_int + shift_int)
             scaling_factor = scaling_factor * sigmoid_scaling_factor / 2
-        elif self.gelu_type == "mpcformer":
+        elif self.gelu_type == "quad":
             # GeLU(x) = 0.125x2 + 0.25x + 0.5
             x_int = self.int_poly(x_int=x_int, scaling_factor=scaling_factor)
             limit = 2 ** (self.act_bit - 1) - 1
@@ -1010,7 +1154,7 @@ class IntSoftmax(nn.Module):
         scaling_factor = exp_scaling_factor / 2**self.n
         return exp_int, scaling_factor
 
-    def forward(self, x, scaling_factor=None, dim=-1):
+    def forward(self, x, dim=-1, scaling_factor=None):
         if self.quant_mode == "none":
             return utils.softmax(x, dim=-1, onnx_trace=False), None
 
@@ -1021,7 +1165,7 @@ class IntSoftmax(nn.Module):
         scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
         x_int = x / scaling_factor
 
-        if self.softmax_mode == "intsoftmax":
+        if self.softmax_mode == "raw":
             x_int_max, _ = x_int.max(dim=-1, keepdim=True)
             x_int = x_int - x_int_max
 
@@ -1053,6 +1197,8 @@ class IntSoftmax(nn.Module):
             print(f"Softmax Output: {output[:5, :5]}")
         return out * scaling_factor
 
+NORM_MODE = "layer_norm"
+NORM = {"raw": nn.LayerNorm, "layer_norm": BertLayerNorm, "int_ln": IntLayerNorm}
 
 class GPT2Config(object):
     """Configuration class to store the configuration of a `GPT2Model`."""
@@ -1204,74 +1350,8 @@ class GPT2Config(object):
             writer.write(self.to_json_string())
 
 
-# Embedding -> QuantEmbedding with MEDIUM
-# TODO: layernorm
-class GPTEmbeddings(nn.Module):
-    """Construct the embeddings from word, position and token_type embeddings."""
-
-    def __init__(self, config):
-        super(GPTEmbeddings, self).__init__()
-        # self.word_embeddings = nn.Embedding(
-        #     config.vocab_size, config.hidden_size, padding_idx=0
-        # )
-        # self.position_embeddings = nn.Embedding(
-        #     config.max_position_embeddings, config.hidden_size
-        # )
-        # self.token_type_embeddings = nn.Embedding(
-        #     config.type_vocab_size, config.hidden_size
-        # )
-
-        self.word_embeddings = QuantEmbedding(
-            weight_bit=FM_BIT_MEDIUM,
-            quant_mode="symmetric",
-            fraction_bit=FRACTION_BIT_MEDIUM,
-        )
-        self.word_embeddings.set_param(
-            nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
-        )
-
-        self.position_embeddings = QuantEmbedding(
-            weight_bit=FM_BIT_MEDIUM,
-            quant_mode="symmetric",
-            fraction_bit=FRACTION_BIT_MEDIUM,
-        )
-        self.position_embeddings.set_param(
-            nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        )
-
-        self.token_type_embeddings = QuantEmbedding(
-            weight_bit=FM_BIT_MEDIUM,
-            quant_mode="symmetric",
-            fraction_bit=FRACTION_BIT_MEDIUM,
-        )
-        self.token_type_embeddings.set_param(
-            nn.Embedding(config.type_vocab_size, config.hidden_size)
-        )
-
-        # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
-        # any TensorFlow checkpoint file
-        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-
-    def forward(self, input_ids, token_type_ids=None):
-        seq_length = input_ids.size(1)
-        position_ids = torch.arange(
-            seq_length, dtype=torch.long, device=input_ids.device
-        )
-        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
-        if token_type_ids is None:
-            token_type_ids = torch.zeros_like(input_ids)
-
-        words_embeddings = self.word_embeddings(input_ids)
-        position_embeddings = self.position_embeddings(position_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
-
-        embeddings = words_embeddings + position_embeddings + token_type_embeddings
-        embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
-        return embeddings
-
-
+# Conv1D -> QuantConv1D with SMALL
+# Softmax -> config with SMALL
 class GPT2Attention(nn.Module):
     def __init__(self, config, is_cross_attention=False, layer_idx=None):
         super().__init__()
@@ -1304,14 +1384,57 @@ class GPT2Attention(nn.Module):
         self.reorder_and_upcast_attn = config.reorder_and_upcast_attn
 
         if self.is_cross_attention:
-            self.c_attn = Conv1D(2 * self.embed_dim, self.embed_dim)
-            self.q_attn = Conv1D(self.embed_dim, self.embed_dim)
+            # self.c_attn = Conv1D(2 * self.embed_dim, self.embed_dim)
+            self.c_attn = QuantConv1D(
+                2 * self.embed_dim, self.embed_dim,
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.c_attn.set_param(Conv1D(2 * self.embed_dim, self.embed_dim))
+            
+            # self.q_attn = Conv1D(self.embed_dim, self.embed_dim)
+            self.q_attn = QuantConv1D(
+                self.embed_dim, self.embed_dim,
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.q_attn.set_param(Conv1D(self.embed_dim, self.embed_dim))
         else:
-            self.c_attn = Conv1D(3 * self.embed_dim, self.embed_dim)
-        self.c_proj = Conv1D(self.embed_dim, self.embed_dim)
+            # self.c_attn = Conv1D(3 * self.embed_dim, self.embed_dim)
+            self.c_attn = QuantConv1D(
+                3 * self.embed_dim, self.embed_dim,
+                weight_bit=FM_BIT_SMALL,
+                bias_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.c_attn.set_param(Conv1D(3 * self.embed_dim, self.embed_dim))
+        
+        # self.c_proj = Conv1D(self.embed_dim, self.embed_dim)
+        self.c_proj = QuantConv1D(
+            self.embed_dim, self.embed_dim,
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.c_proj.set_param(Conv1D(self.embed_dim, self.embed_dim))
 
         self.attn_dropout = nn.Dropout(config.attn_pdrop)
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
+
+        # input \in {quan_2relu, quan_raw}
+        if config.softmax_act.startswith("quan"):
+            softmax_mode = config.softmax_act.split("_")[-1]
+            self.softmax_act = IntSoftmax(
+                FM_BIT_SMALL, "symmetric", FRACTION_BIT_SMALL, softmax_mode=softmax_mode
+            )
+        else:
+            self.softmax_act = ACT2SFN[config.softmax_act]
 
         self.pruned_heads = set()
 
@@ -1358,9 +1481,15 @@ class GPT2Attention(nn.Module):
 
         if attention_mask is not None:
             # Apply the attention mask
-            attn_weights = attn_weights + attention_mask
+            # attn_weights = attn_weights + attention_mask
+            attention_mask_zero_one = torch.where(
+                attention_mask == -1e4,
+                torch.ones_like(attention_mask).to(attention_mask.device),
+                attention_mask,
+            )
+            attention_mask_zero_one = 1 - attention_mask_zero_one
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights = self.softmax_act(attn_weights, attention_mask_zero_one, dim=-1)
 
         # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
         attn_weights = attn_weights.type(value.dtype)
@@ -1431,9 +1560,15 @@ class GPT2Attention(nn.Module):
 
         if attention_mask is not None:
             # Apply the attention mask
-            attn_weights = attn_weights + attention_mask
+            # attn_weights = attn_weights + attention_mask
+            attention_mask_zero_one = torch.where(
+                attention_mask == -1e4,
+                torch.ones_like(attention_mask).to(attention_mask.device),
+                attention_mask,
+            )
+            attention_mask_zero_one = 1 - attention_mask_zero_one
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights = self.softmax_act(attn_weights, attention_mask_zero_one, dim=-1)
 
         # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op if otherwise
         if attn_weights.dtype != torch.float32:
@@ -1526,14 +1661,45 @@ class GPT2Attention(nn.Module):
 
         return outputs  # a, present, (attentions)
 
-
+# Conv1D -> QuantConv1D with SMALL
+# Act -> config w/wo quan with SMALL
 class GPT2MLP(nn.Module):
     def __init__(self, intermediate_size, config):
         super().__init__()
         embed_dim = config.hidden_size
-        self.c_fc = Conv1D(intermediate_size, embed_dim)
-        self.c_proj = Conv1D(embed_dim, intermediate_size)
-        self.act = ACT2FN[config.activation_function]
+        # self.c_fc = Conv1D(intermediate_size, embed_dim)
+        self.c_fc = QuantConv1D(
+            intermediate_size, embed_dim,
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.c_fc.set_param(Conv1D(intermediate_size, embed_dim))
+
+        # self.c_proj = Conv1D(embed_dim, intermediate_size)
+        self.c_proj = QuantConv1D(
+            embed_dim, intermediate_size,
+            weight_bit=FM_BIT_SMALL,
+            bias_bit=FM_BIT_SMALL,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_SMALL,
+        )
+        self.c_proj.set_param(Conv1D(embed_dim, intermediate_size))
+
+        # self.act = ACT2FN[config.activation_function]
+        # quan_raw, quan_quad
+        if config.activation_function.startswith("quan"):
+            gelu_mode = config.activation_function.split("_")[-1]
+            self.act = IntGELU(
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+                gelu_type=gelu_mode,
+                act_bit=FM_BIT_SMALL,
+            )
+        else:
+            self.act = ACT2FN[config.activation_function]
+
         self.dropout = nn.Dropout(config.resid_pdrop)
 
     def forward(
@@ -1545,18 +1711,36 @@ class GPT2MLP(nn.Module):
         hidden_states = self.dropout(hidden_states)
         return hidden_states
 
-
+# layernorm -> config with SMALL
+# DONE: GPT2MLP, GPT2Attention
 class GPT2Block(nn.Module):
     def __init__(self, config, layer_idx=None):
         super().__init__()
         hidden_size = config.hidden_size
         inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
 
-        self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
+        if NORM_MODE == "int_ln":
+            self.ln_1 = IntLayerNorm(
+                output_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.ln_1.set_param(nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon))
+
+            self.ln_2 = IntLayerNorm(
+                output_bit=FM_BIT_SMALL,
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+            )
+            self.ln_2.set_param(nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon))
+        else:
+            self.ln_1 = NORM[NORM_MODE](hidden_size, eps=config.layer_norm_epsilon)
+            self.ln_2 = NORM[NORM_MODE](hidden_size, eps=config.layer_norm_epsilon)
+
         self.attn = GPT2Attention(config, layer_idx=layer_idx)
-        self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
         if config.add_cross_attention:
+            raise Exception("should not use add_cross_attention")
             self.crossattention = GPT2Attention(
                 config, is_cross_attention=True, layer_idx=layer_idx
             )
@@ -1835,7 +2019,8 @@ class GPT2PreTrainedModel(nn.Module, ModuleUtilsMixin):
 
         return model
 
-
+# Embedding -> QuantEmbedding with MEDIUM
+# layernorm -> config with MEDIUM
 class GPT2Model(GPT2PreTrainedModel):
     _keys_to_ignore_on_load_missing = ["attn.masked_bias"]
 
@@ -1844,14 +2029,41 @@ class GPT2Model(GPT2PreTrainedModel):
 
         self.embed_dim = config.hidden_size
 
-        self.wte = nn.Embedding(config.vocab_size, self.embed_dim)
-        self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
+        # self.wte = nn.Embedding(config.vocab_size, self.embed_dim)
+        # self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
+
+        self.wte = QuantEmbedding(
+            weight_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.wte.set_param(
+            nn.Embedding(config.vocab_size, self.embed_dim)
+        )
+
+        self.wpe = QuantEmbedding(
+            weight_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.wpe.set_param(
+            nn.Embedding(config.max_position_embeddings, self.embed_dim)
+        )
 
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList(
             [GPT2Block(config, layer_idx=i) for i in range(config.num_hidden_layers)]
         )
-        self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+        # self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+        if NORM_MODE == "int_ln":
+            self.ln_f = IntLayerNorm(
+                output_bit=FM_BIT_MEDIUM,
+                quant_mode="symmetric",
+                fraction_bit=FM_BIT_MEDIUM,
+            )
+            self.ln_f.set_param(nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon))
+        else:
+            self.ln_f = NORM[NORM_MODE](self.embed_dim, eps=config.layer_norm_epsilon)
 
         # Model parallel
         self.model_parallel = False
@@ -2099,7 +2311,8 @@ class GPT2Model(GPT2PreTrainedModel):
             cross_attentions=all_cross_attentions,
         )
 
-
+# Linear -> QuantLinear with MEDIUM
+# TODO: GPT2Model
 class GPT2LMHeadModel(GPT2PreTrainedModel):
     _keys_to_ignore_on_load_missing = [
         r"attn.masked_bias",
@@ -2110,7 +2323,15 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.transformer = GPT2Model(config)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        # self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = QuantLinear(
+            weight_bit=FM_BIT_MEDIUM,
+            bias_bit=FM_BIT_MEDIUM,
+            quant_mode="symmetric",
+            fraction_bit=FRACTION_BIT_MEDIUM,
+        )
+        self.lm_head.set_param(nn.Linear(config.n_embd, config.vocab_size, bias=False))
 
         # Model parallel
         self.model_parallel = False
