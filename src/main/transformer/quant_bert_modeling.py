@@ -799,7 +799,7 @@ class IntGELU(nn.Module):
         force_dequant="none",
         fraction_bit=10,
         act_bit=31,
-        gelu_type="mpcformer",
+        gelu_type="quad",
     ):
         super(IntGELU, self).__init__()
         self.register_buffer("input_scaling_factor", torch.ones(1))
@@ -880,7 +880,7 @@ class IntGELU(nn.Module):
         scaling_factor = torch.tensor(1.0 / 2**self.fraction_bit).cuda()
         x_int = x / scaling_factor
 
-        if self.gelu_type == "intglue":
+        if self.gelu_type == "raw":
             sigmoid_int, sigmoid_scaling_factor = self.int_erf(
                 x_int, scaling_factor / self.k
             )
@@ -889,7 +889,7 @@ class IntGELU(nn.Module):
 
             x_int = x_int * (sigmoid_int + shift_int)
             scaling_factor = scaling_factor * sigmoid_scaling_factor / 2
-        elif self.gelu_type == "mpcformer":
+        elif self.gelu_type == "quad":
             # GeLU(x) = 0.125x2 + 0.25x + 0.5
             x_int = self.int_poly(x_int=x_int, scaling_factor=scaling_factor)
             limit = 2 ** (self.act_bit - 1) - 1
@@ -1361,11 +1361,19 @@ class BertIntermediate(nn.Module):
         #     self.intermediate_act_fn = ACT2FN[config.hidden_act]
         # else:
         #     self.intermediate_act_fn = config.hidden_act
-        self.intermediate_act_fn = IntGELU(
-            quant_mode="symmetric",
-            fraction_bit=FRACTION_BIT_SMALL,
-            gelu_type="mpcformer",
-        )
+
+        # input \in {quan_quad, quan_raw}
+        if config.hidden_act.startswith("quan"):
+            gelu_mode = config.hidden_act.split("_")[-1]
+            self.intermediate_act_fn = IntGELU(
+                quant_mode="symmetric",
+                fraction_bit=FRACTION_BIT_SMALL,
+                gelu_type=gelu_mode,
+                act_bit=FM_BIT_SMALL,
+            )
+        else:
+            self.intermediate_act_fn = ACT2FN[config.hidden_act]
+
         if config.log_path is not None:
             with open(config.log_path, "a") as f:
                 f.write(f"using act: {self.intermediate_act_fn} \n")
