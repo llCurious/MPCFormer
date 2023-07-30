@@ -85,8 +85,8 @@ def distill_hidden():
     # with open(os.path.join(student_dir, "config.json"), "w") as outfile:
     #     outfile.write(json_object)
 
-    cmd = f"python gpt2_distill_helper.py --teacher_model {model_path} \
-               --student_model {model_path} \
+    cmd = f"python gpt2_distill_helper.py --teacher_model {teacher_dir} \
+               --student_model {student_dir} \
                --data_dir {data_dir} --task_name {task_name} --output_dir {output_dir} \
                --max_seq_length {max_seq_length} --train_batch_size {bs} --learning_rate {lr_hidden}\
                --ablation_ratio {ablation_ratio} \
@@ -128,6 +128,7 @@ def distill_pred():
                --num_train_epochs  5 \
                --eval_step 100 \
                --max_seq_length {max_seq_length} \
+               --ablation_ratio {ablation_ratio} \
                --train_batch_size {bs} --log_path {log_path} \
                --hidden_act {hidden_act} \
                --softmax_act {softmax_act}"
