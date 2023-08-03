@@ -307,9 +307,9 @@ class QuantLinear(nn.Module):
         self.register_buffer("weight_integer", torch.zeros_like(self.weight))
         try:
             self.bias = Parameter(linear.bias.data.clone())
+            self.register_buffer("bias_integer", torch.zeros_like(self.bias))
         except AttributeError:
             self.bias = None
-        self.register_buffer("bias_integer", torch.zeros_like(self.bias))
 
     def fix(self):
         pass
@@ -357,10 +357,12 @@ class QuantLinear(nn.Module):
         )
 
         bias_scaling_factor = self.fc_scaling_factor * prev_act_scaling_factor
-
-        self.bias_integer = self.weight_function(
-            self.bias, self.bias_bit, False, bias_scaling_factor
-        )
+        try:
+            self.bias_integer = self.weight_function(
+                self.bias, self.bias_bit, False, bias_scaling_factor
+            )
+        except:
+            self.bias_integer = None
 
         prev_act_scaling_factor = prev_act_scaling_factor.view(1, -1)
         x_int = x / prev_act_scaling_factor
@@ -1479,6 +1481,7 @@ class GPT2Attention(nn.Module):
                 causal_mask, attn_weights, self.masked_bias.to(attn_weights.dtype)
             )
 
+        attention_mask_zero_one = None
         if attention_mask is not None:
             # Apply the attention mask
             # attn_weights = attn_weights + attention_mask
@@ -1928,7 +1931,7 @@ class GPT2PreTrainedModel(nn.Module, ModuleUtilsMixin):
         config.softmax_act = softmax_act
         # FIXME: hack
         config.add_cross_attention = kwargs.pop("add_cross_attention", False)
-        config.use_return_dict = kwargs.pop("return_dict", False)
+        config.return_dict = kwargs.pop("return_dict", False)
         config.output_attentions = kwargs.pop("output_attentions", True)
         config.output_hidden_states = kwargs.pop("output_hidden_states", True)
 
@@ -2114,7 +2117,7 @@ class GPT2Model(GPT2PreTrainedModel):
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict if return_dict is not None else self.config.return_dict
         )
 
         if input_ids is not None and inputs_embeds is not None:
@@ -2417,7 +2420,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
         return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict if return_dict is not None else self.config.return_dict
         )
 
         transformer_outputs = self.transformer(
