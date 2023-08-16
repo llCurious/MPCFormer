@@ -92,13 +92,25 @@ Metric-related codes
 
 
 def simple_ppl(preds, labels, tokenizer):
-    loss = torch.sum(
-        torch.nn.functional.log_softmax(preds, dim=-1)
-        * torch.nn.functional.one_hot(labels, num_classes=preds.shape[-1]),
+    # NOTE: older version, it seems to calculate the wrong PPL
+    # loss = torch.sum(
+    #     torch.nn.functional.log_softmax(preds, dim=-1)
+    #     * torch.nn.functional.one_hot(labels, num_classes=preds.shape[-1]),
+    # )
+    # count = torch.sum(labels != tokenizer.pad_token_id)
+    # logging.info(f"loss: {loss}, count: {count}")
+    # perplexity = torch.exp(-loss / count)
+
+    # NOTE: reference: https://github.com/huggingface/transformers/issues/473
+    shift_logits = preds.contiguous()
+    shift_labels = labels.contiguous()
+    # Flatten the tokens
+    loss_fct = CrossEntropyLoss()
+    cls_loss = loss_fct(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
     )
-    count = torch.sum(labels != tokenizer.pad_token_id)
-    logging.info(f"loss: {loss}, count: {count}")
-    perplexity = torch.exp(-loss / count)
+    perplexity = torch.exp(cls_loss)
     return perplexity
 
 
