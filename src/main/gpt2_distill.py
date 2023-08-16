@@ -73,17 +73,17 @@ def distill_hidden():
     )
 
     # overwrite config
-    # config = json.load(open(os.path.join(teacher_dir, "config.json")))
-    # config["log_path"] = log_path
-    # json_object = json.dumps(config)
-    # with open(os.path.join(teacher_dir, "config.json"), "w") as outfile:
-    #     outfile.write(json_object)
+    config = json.load(open(os.path.join(teacher_dir, "config.json")))
+    config["log_path"] = log_path
+    json_object = json.dumps(config)
+    with open(os.path.join(teacher_dir, "config.json"), "w") as outfile:
+        outfile.write(json_object)
 
-    # config = json.load(open(os.path.join(student_dir, "config.json")))
-    # config["log_path"] = log_path
-    # json_object = json.dumps(config)
-    # with open(os.path.join(student_dir, "config.json"), "w") as outfile:
-    #     outfile.write(json_object)
+    config = json.load(open(os.path.join(student_dir, "config.json")))
+    config["log_path"] = log_path
+    json_object = json.dumps(config)
+    with open(os.path.join(student_dir, "config.json"), "w") as outfile:
+        outfile.write(json_object)
 
     cmd = f"python gpt2_distill_helper.py --teacher_model {teacher_dir} \
                --student_model {student_dir} \
