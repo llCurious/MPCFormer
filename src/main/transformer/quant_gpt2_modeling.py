@@ -1186,7 +1186,7 @@ class IntSoftmax(nn.Module):
             reduce_dim = x_int.shape[dim]
             out = (x_int + eps / reduce_dim) / (
                 torch.sum(x_int, dim=dim, keepdims=True) + eps
-            )
+            ) / scaling_factor # NOTE: the division erase the scaling factor
         else:
             raise NotImplementedError(
                 f"Int Softmax Mode: {self.softmax_mode} is not supported."
@@ -1437,6 +1437,10 @@ class GPT2Attention(nn.Module):
             )
         else:
             self.softmax_act = ACT2SFN[config.softmax_act]
+        
+        if config.log_path is not None:
+            with open(config.log_path, "a") as f:
+                f.write(f"using softmax_act: {self.softmax_act} \n")
 
         self.pruned_heads = set()
 
@@ -1702,6 +1706,10 @@ class GPT2MLP(nn.Module):
             )
         else:
             self.act = ACT2FN[config.activation_function]
+
+        if config.log_path is not None:
+            with open(config.log_path, "a") as f:
+                f.write(f"using act: {self.act} \n")
 
         self.dropout = nn.Dropout(config.resid_pdrop)
 

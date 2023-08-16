@@ -997,7 +997,7 @@ class IntSoftmax(nn.Module):
             reduce_dim = x_int.shape[dim]
             out = (x_int + eps / reduce_dim) / (
                 torch.sum(x_int, dim=dim, keepdims=True) + eps
-            )
+            ) / scaling_factor # NOTE: the division erase the scaling factor
         else:
             raise NotImplementedError(
                 f"Int Softmax Mode: {self.softmax_mode} is not supported."
