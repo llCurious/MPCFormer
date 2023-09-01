@@ -235,7 +235,7 @@ def do_eval(
 
     eval_loss = eval_loss / nb_eval_steps
     preds = preds[0]
-    logging.info(f"pred type: {type(preds)}")
+    # logging.info(f"pred type: {type(preds)}")
 
     if output_mode == "classification":
         preds = np.argmax(preds, axis=1)
@@ -411,7 +411,7 @@ def main():
         "qnli": {"num_train_epochs": 10, "max_seq_length": 128},
         "rte": {"num_train_epochs": 50, "max_seq_length": 128},
         "imdb": {"num_train_epochs": 30, "max_seq_length": 512},
-        "wiki": {"num_train_epochs": 1, "max_seq_length": 32},
+        "wiki": {"num_train_epochs": 1, "max_seq_length": 50},
     }
 
     acc_tasks = ["mnli", "mrpc", "sst2", "qqp", "qnli", "rte", "imdb"]
@@ -677,6 +677,7 @@ def main():
         # Train and evaluate
         global_step = 0
         best_dev_acc = 0.0
+        best_dev_ppl = 1e4
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
 
         for epoch_ in trange(int(args.num_train_epochs), desc="Epoch"):
@@ -851,8 +852,8 @@ def main():
                             best_dev_acc = result["mcc"]
                             save_model = True
 
-                        if task_name in gen_tasks and result["ppl"] < best_dev_acc:
-                            best_dev_acc = result["ppl"]
+                        if task_name in gen_tasks and result["ppl"] < best_dev_ppl:
+                            best_dev_ppl = result["ppl"]
                             save_model = True
 
                     if save_model:

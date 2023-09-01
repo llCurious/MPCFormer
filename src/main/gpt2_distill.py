@@ -90,6 +90,7 @@ def distill_hidden():
                --data_dir {data_dir} --task_name {task_name} --output_dir {output_dir} \
                --max_seq_length {max_seq_length} --train_batch_size {bs} --learning_rate {lr_hidden}\
                --ablation_ratio {ablation_ratio} \
+                --eval_step 500 \
                --do_lower_case --log_path {log_path} --hidden_act {hidden_act} --softmax_act {softmax_act}"
     if args.quant:
         cmd += " --quant"
@@ -125,8 +126,8 @@ def distill_pred():
                --output_dir {output_dir_stage2} \
                --do_lower_case \
                --learning_rate {lr_pred}  \
-               --num_train_epochs  5 \
-               --eval_step 100 \
+               --num_train_epochs  1 \
+               --eval_step 500 \
                --max_seq_length {max_seq_length} \
                --ablation_ratio {ablation_ratio} \
                --train_batch_size {bs} --log_path {log_path} \
