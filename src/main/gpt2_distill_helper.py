@@ -570,19 +570,19 @@ def main():
         # teacher_model.eval()
 
     # FIXME: eval is currently bypassed
-    # result_t = do_eval(
-    #     teacher_model,
-    #     task_name,
-    #     eval_dataloader,
-    #     device,
-    #     output_mode,
-    #     eval_labels,
-    #     tokenizer,
-    # )
-    # logger.info("***** Teacher evaluation *****")
-    # logger.info(result_t)
-    # with open(args.log_path, "a") as f:
-    #     f.write(f"teacher: {result_t} \n")
+    result_t = do_eval(
+        teacher_model,
+        task_name,
+        eval_dataloader,
+        device,
+        output_mode,
+        eval_labels,
+        tokenizer,
+    )
+    logger.info("***** Teacher evaluation *****")
+    logger.info(result_t)
+    with open(args.log_path, "a") as f:
+        f.write(f"teacher: {result_t} \n")
 
     """
     Student model load
@@ -703,10 +703,11 @@ def main():
                 att_loss = 0.0
                 rep_loss = 0.0
                 cls_loss = 0.0
-                with torch.no_grad():
-                    teacher_logits, _, teacher_reps, teacher_atts = teacher_model(
-                        input_ids
-                    )
+                if not args.pred_distill:
+                    with torch.no_grad():
+                        teacher_logits, _, teacher_reps, teacher_atts = teacher_model(
+                            input_ids
+                        )
 
                 student_logits, _, student_reps, student_atts = student_model(
                     input_ids
