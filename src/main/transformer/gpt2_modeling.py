@@ -225,13 +225,58 @@ class NewGELUActivation(nn.Module):
                 )
             )
         )
+def gelu_poly(x):
+    b0 = x < -4.0
+    b1 = x < -1.95
+    b2 = x > 3.0
+    b3 = b1 ^ b2 ^ True  # x in [-1.95, 3.0]
+    b4 = b0 ^ b1  # x in [-4, -1.95]
 
+    # seg1 = a[3] * x^3 + a[2] * x^2 + a[1] * x + a[0]
+    # seg2 = b[6] * x^6 + b[4] * x^4 + b[2] * x^2 + b[1] * x + b[0]
+    a_coeffs = torch.asarray(
+        [
+            -0.5054031199708174,
+            -0.42226581151983866,
+            -0.11807612951181953,
+            -0.011034134030615728,
+        ]
+    )
+    b_coeffs = torch.asarray(
+        [
+            0.008526321541038084,
+            0.5,
+            0.3603292692789629,
+            0.0,
+            -0.037688200365904236,
+            0.0,
+            0.0018067462606141187,
+        ]
+    )
+    x2 = torch.square(x)
+    x3 = torch.multiply(x, x2)
+    x4 = torch.square(x2)
+    x6 = torch.square(x3)
+
+    seg1 = a_coeffs[3] * x3 + a_coeffs[2] * x2 + a_coeffs[1] * x + a_coeffs[0]
+    seg2 = (
+        b_coeffs[6] * x6
+        + b_coeffs[4] * x4
+        + b_coeffs[2] * x2
+        + b_coeffs[1] * x
+        + b_coeffs[0]
+    )
+
+    ret = b2 * x + b4 * seg1 + b3 * seg2
+
+    return ret
 
 ACT2FN = {
     "gelu": gelu,
     "relu": torch.nn.functional.relu,
     "quad": quad,
     "gelu_new": NewGELUActivation(),
+    "poly": gelu_poly,
 }
 ACT2SFN = {
     "softmax": softmax,

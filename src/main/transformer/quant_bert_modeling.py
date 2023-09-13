@@ -858,7 +858,7 @@ class IntGELU(nn.Module):
     def int_poly(self, x_int, scaling_factor):
         with torch.no_grad():
             a_int = torch.floor(self.poly_coeff[0] / scaling_factor)
-            b_int = torch.floor(self.poly_coeff[2] / scaling_factor)
+            b_int = torch.floor(self.poly_coeff[1] / scaling_factor)
             c_int = torch.floor(self.poly_coeff[2] / scaling_factor)
 
         tmp_int = (
