@@ -1,4 +1,4 @@
-from transformers import AutoTokenizer, FlaxGPT2LMHeadModel, GPT2Config
+from transformers import AutoTokenizer, FlaxGPT2LMHeadModel, GPT2Config, BertTokenizer, BertForSequenceClassification
 import jax.numpy as jnp
 import torch
 from transformers import GPT2LMHeadModel
@@ -12,9 +12,11 @@ prompt_text = "I am Julia and I wanna"
 
 model_path = "/home/haoqi.whq/playground/MPCFormer/src/main/tmp/qd/wiki/gelu_new_softmax_noquant/gpt2/5e-05_1e-05_16"
 model_path = "/home/haoqi.whq/playground/MPCFormer/src/main/tmp/qd/wiki/gelu_new_softmax/gpt2/5e-05_1e-05_16"
-model_path = "/home/haoqi.whq/playground/MPCFormer/src/main/tmp/qd/wiki/quan_quad_softmax/gpt2/5e-05_1e-05_16_stage2"
+# model_path = "/home/haoqi.whq/playground/MPCFormer/src/main/tmp/qd/wiki/quan_quad_softmax/gpt2/5e-05_1e-05_16_stage2"
 model_path = "/home/haoqi.whq/.cache/huggingface/transformers/gpt2-wikitext-103"
-# model_path = "gpt2"
+model_path = "gpt2"
+# model_path = "TurkuNLP/gpt3-finnish-medium"
+# model_path = "gpt2-medium"
 
 
 # greedy search
@@ -118,10 +120,49 @@ def wikitext():
         if cnt >= 10:
             break
         
-def dist():
+def distribution_gpt2():
     tokenizer = AutoTokenizer.from_pretrained(model_path, do_lower_case=True)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     pretrained_model = GPT2LMHeadModel.from_pretrained(model_path)
+
+    inputs_ids = tokenizer.encode(prompt_text, return_tensors="pt")
+    outputs = pretrained_model(inputs_ids, output_hidden_states=True, output_attentions=True, return_dict=True)
+    
+    print(inputs_ids.shape)
+    print(outputs.logits.shape)
+
+    max_abs = []
+    for hs in outputs.hidden_states:
+        hs = hs.detach()
+        # print(hs)
+        # print(torch.max(torch.abs(hs), dim=-2))
+        print(hs.shape, torch.max(torch.abs(hs)))
+
+        tmp_max = torch.max(torch.abs(hs), dim=-1)
+        ret = [m for m in tmp_max]
+        max_abs.append(ret)
+        
+    # print(max_abs)
+    # sns.boxplot(x=[i for i in range(len(outputs.hidden_states))], y = max_abs)
+
+    max_bas = []
+    for att in outputs.attentions:
+        att = att.detach()
+        print(torch.max(torch.abs(att)))
+        tmp_max = torch.max(torch.abs(att), dim=-1)
+        ret = [m for m in tmp_max]
+        max_abs.append(ret)
+    
+    outputs_ids = text_generation_torch(inputs_ids, pretrained_model)
+
+    print(f"Torch: Output ids: {outputs_ids[0]}")
+    print(f"Torch: Output: {tokenizer.decode(outputs_ids[0])}")
+
+def distribution_bert():
+    tokenizer = BertTokenizer.from_pretrained(model_path, do_lower_case=True)
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    pretrained_model = BertForSequenceClassification.from_pretrained(model_path)
+
 
     inputs_ids = tokenizer.encode(prompt_text, return_tensors="pt")
     outputs = pretrained_model(inputs_ids, output_hidden_states=True, output_attentions=True)
@@ -132,9 +173,8 @@ def dist():
     max_abs = []
     for hs in outputs.hidden_states:
         hs = hs.detach()
-        # print(hs)
+        print(hs.shape, torch.max(torch.abs(hs)))
         # print(torch.max(torch.abs(hs), dim=-2))
-        print(torch.max(torch.abs(hs)))
         tmp_max = torch.max(torch.abs(hs), dim=-1)
         ret = [m for m in tmp_max]
         max_abs.append(ret)
@@ -151,7 +191,7 @@ def dist():
     print(f"Torch: Output: {tokenizer.decode(outputs_ids[0])}")
 
 if __name__ == "__main__":
-    dist()
+    distribution_gpt2()
     # wikitext()
     # run_on_torch()
     # run_on_flax()

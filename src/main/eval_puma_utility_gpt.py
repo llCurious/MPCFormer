@@ -1,0 +1,499 @@
+# coding=utf-8
+# 2019.12.2-Changed for TinyBERT task-specific distillation
+#      Huawei Technologies Co., Ltd. <yinyichun@huawei.com>
+# Copyright 2020 Huawei Technologies Co., Ltd.
+# Copyright 2018 The Google AI Language Team Authors, The HuggingFace Inc. team.
+# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import absolute_import, division, print_function
+
+import argparse
+import csv
+import logging
+import os
+import random
+import sys
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
+from tqdm import tqdm, trange
+
+from torch.nn import CrossEntropyLoss, MSELoss
+from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import matthews_corrcoef, f1_score
+import datasets
+
+from transformers import GPT2Tokenizer
+from transformers import AutoTokenizer
+from transformer.optimization import BertAdam
+from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
+
+# modification
+from transformer.gpt2_modeling import GPT2LMHeadModel
+
+csv.field_size_limit(sys.maxsize)
+
+log_format = "%(asctime)s %(message)s"
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format=log_format,
+    datefmt="%m/%d %I:%M:%S %p",
+)
+fh = logging.FileHandler("debug_layer_loss.log")
+fh.setFormatter(logging.Formatter(log_format))
+logging.getLogger().addHandler(fh)
+logger = logging.getLogger()
+
+oncloud = True
+try:
+    import moxing as mox
+except:
+    oncloud = False
+
+
+def convert_examples_to_features(examples, max_seq_length, tokenizer):
+    """Loads a data file into a list of `InputBatch`s."""
+
+    features = []
+    labels = []
+    for i in trange(len(examples)):
+        encoded_inputs = tokenizer.encode(
+            examples[i],
+            return_tensors="pt",
+            max_length=max_seq_length,
+            truncation=True,
+            padding="max_length",
+        )
+        label = encoded_inputs[:, 1:]
+        # logger.info(f"input size: {encoded_inputs.shape}, label size: {label.shape}")
+        features.append(encoded_inputs)
+        labels.append(label)
+    return features, labels
+
+
+"""
+Metric-related codes
+"""
+
+
+def simple_ppl(preds, labels, tokenizer):
+    # NOTE: older version, it seems to calculate the wrong PPL
+    # loss = torch.sum(
+    #     torch.nn.functional.log_softmax(preds, dim=-1)
+    #     * torch.nn.functional.one_hot(labels, num_classes=preds.shape[-1]),
+    # )
+    # count = torch.sum(labels != tokenizer.pad_token_id)
+    # logging.info(f"loss: {loss}, count: {count}")
+    # perplexity = torch.exp(-loss / count)
+
+    # NOTE: reference: https://github.com/huggingface/transformers/issues/473
+    shift_logits = preds.contiguous()
+    shift_labels = labels.contiguous()
+    # Flatten the tokens
+    loss_fct = CrossEntropyLoss()
+    cls_loss = loss_fct(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+    )
+    perplexity = torch.exp(cls_loss)
+    return perplexity
+
+
+def simple_accuracy(preds, labels):
+    return (preds == labels).mean()
+
+
+def acc_and_f1(preds, labels):
+    acc = simple_accuracy(preds, labels)
+    f1 = f1_score(y_true=labels, y_pred=preds)
+    return {
+        "acc": acc,
+        "f1": f1,
+        "acc_and_f1": (acc + f1) / 2,
+    }
+
+
+def pearson_and_spearman(preds, labels):
+    pearson_corr = pearsonr(preds, labels)[0]
+    spearman_corr = spearmanr(preds, labels)[0]
+    return {
+        "pearson": pearson_corr,
+        "spearmanr": spearman_corr,
+        "corr": (pearson_corr + spearman_corr) / 2,
+    }
+
+
+def compute_metrics(task_name, preds, labels, tokenizer):
+    assert len(preds) == len(labels)
+    if task_name == "cola":
+        return {"mcc": matthews_corrcoef(labels, preds)}
+    elif task_name == "sst2":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "mrpc":
+        return acc_and_f1(preds, labels)
+    elif task_name == "stsb":
+        return pearson_and_spearman(preds, labels)
+    elif task_name == "qqp":
+        return acc_and_f1(preds, labels)
+    elif task_name == "mnli":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "mnli-mm":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "qnli":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "rte":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "wnli":
+        return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "imdb":
+        return {"imdb": simple_accuracy(preds, labels)}
+    elif task_name == "wiki":
+        return {"ppl": simple_ppl(preds, labels, tokenizer)}
+    else:
+        raise KeyError(task_name)
+
+
+def get_tensor_data(data):
+    feats, labels = data
+    logging.info(f"Labels size: {len(labels)},  shape: {labels[0].shape}")
+
+    all_label_ids = torch.cat(labels, dim=0)
+    all_input_ids = torch.cat(feats, dim=0)
+
+    # all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    # all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    tensor_data = TensorDataset(all_input_ids, all_label_ids)
+    return tensor_data, all_label_ids
+
+
+def result_to_file(result, file_name):
+    with open(file_name, "a") as writer:
+        logger.info("***** Eval results *****")
+        for key in sorted(result.keys()):
+            logger.info("  %s = %s", key, str(result[key]))
+            writer.write("%s = %s\n" % (key, str(result[key])))
+
+
+def do_eval(
+    model, task_name, eval_dataloader, device, output_mode, eval_labels, tokenizer
+):
+    eval_loss = 0
+    nb_eval_steps = 0
+    preds = []
+    orig_state = model.training
+    model.eval()
+    for batch_ in tqdm(eval_dataloader, desc="Evaluating"):
+        batch_ = tuple(t.to(device) for t in batch_)
+        with torch.no_grad():
+            input_ids, label_ids = batch_
+            # logits, hidden_states, all_hidden_states, all_self_attentions
+            logits, _, _, _ = model(input_ids)
+        # create eval loss and other metric required by the task
+        if output_mode == "classification":
+            loss_fct = CrossEntropyLoss()
+            tmp_eval_loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
+        elif output_mode == "regression":
+            loss_fct = MSELoss()
+            tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
+        elif output_mode == "generation":
+            # NOTE: from dong
+            # tmp_eval_loss = torch.sum(
+            #     torch.nn.functional.log_softmax(logits[:, :-1, :], dim=-1)
+            #     * torch.nn.functional.one_hot(label_ids, num_classes=logits.shape[-1]),
+            #     dim=-1,
+            # )
+            # NOTE: from huggingface
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = label_ids.contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            tmp_eval_loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            )
+
+        eval_loss += tmp_eval_loss.mean().item()
+        nb_eval_steps += 1
+        if len(preds) == 0:
+            preds.append(logits[..., :-1, :].detach().cpu())
+        else:
+            preds[0] = torch.cat((preds[0], logits[..., :-1, :].detach().cpu()))
+
+    eval_loss = eval_loss / nb_eval_steps
+    preds = preds[0]
+    # logging.info(f"pred type: {type(preds)}")
+
+    if output_mode == "classification":
+        preds = np.argmax(preds, axis=1)
+    elif output_mode == "regression":
+        preds = np.squeeze(preds)
+    elif output_mode == "generation":
+        preds = preds
+
+    # logging.info(f"pred type: {type(preds)}")
+    result = compute_metrics(task_name, preds, eval_labels, tokenizer)
+    result["eval_loss"] = eval_loss
+
+    if orig_state is True:
+        model.train()
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_dir",
+        default=None,
+        type=str,
+        required=False,
+        help="The input data dir. Should contain the .tsv files (or other data files) for the task.",
+    )
+    parser.add_argument(
+        "--teacher_model", default=None, type=str, help="The teacher model dir."
+    )
+    parser.add_argument(
+        "--task_name",
+        default=None,
+        type=str,
+        required=True,
+        help="The name of the task to train.",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        default="",
+        type=str,
+        help="Where do you want to store the pre-trained models downloaded from s3",
+    )
+    parser.add_argument(
+        "--max_seq_length",
+        default=512,
+        type=int,
+        help="The maximum total input sequence length after WordPiece tokenization. \n"
+        "Sequences longer than this will be truncated, and sequences shorter \n"
+        "than this will be padded.",
+    )
+    parser.add_argument(
+        "--do_eval", action="store_true", help="Whether to run eval on the dev set."
+    )
+    parser.add_argument(
+        "--do_lower_case",
+        action="store_true",
+        help="Set this flag if you are using an uncased model.",
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        default=32,
+        type=int,
+        help="Total batch size for training.",
+    )
+    parser.add_argument(
+        "--eval_batch_size", default=32, type=int, help="Total batch size for eval."
+    )
+    parser.add_argument(
+        "--learning_rate",
+        default=5e-5,
+        type=float,
+        help="The initial learning rate for Adam.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        "--wd",
+        default=1e-4,
+        type=float,
+        metavar="W",
+        help="weight decay",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        default=3.0,
+        type=float,
+        help="Total number of training epochs to perform.",
+    )
+    parser.add_argument(
+        "--warmup_proportion",
+        default=0.1,
+        type=float,
+        help="Proportion of training to perform linear learning rate warmup for. "
+        "E.g., 0.1 = 10%% of training.",
+    )
+    parser.add_argument(
+        "--no_cuda", action="store_true", help="Whether not to use CUDA when available"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="random seed for initialization"
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
+    )
+    parser.add_argument(
+        "--log_path",
+        type=str,
+        default=None,
+        help="path to write important logs: teacher accuracy",
+    )
+
+    # added arguments
+    parser.add_argument("--aug_train", action="store_true")
+    parser.add_argument("--eval_step", type=int, default=200)
+    parser.add_argument("--pred_distill", action="store_true")
+    parser.add_argument("--data_url", type=str, default="")
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--hidden_act", type=str)
+    parser.add_argument("--softmax_act", type=str)
+    parser.add_argument("--ablation_ratio", type=float, default=-1)
+    parser.add_argument("--ablation_init", action="store_true")
+
+    # quantization arguments
+    parser.add_argument("--quant", default=False, action="store_true")
+
+    args = parser.parse_args()
+    logger.info("The args: {}".format(args))
+
+    if args.quant:
+        from transformer.quant_gpt2_modeling import GPT2LMHeadModel as student_gpt2
+
+    else:
+        from transformer.gpt2_modeling import GPT2LMHeadModel as student_gpt2
+
+    output_modes = {
+        "cola": "classification",
+        "mnli": "classification",
+        "mrpc": "classification",
+        "sst2": "classification",
+        "stsb": "regression",
+        "qqp": "classification",
+        "qnli": "classification",
+        "rte": "classification",
+        "wnli": "classification",
+        "imdb": "classification",
+        "wiki": "generation",
+    }
+
+    # intermediate distillation default parameters
+    default_params = {
+        "cola": {"num_train_epochs": 50, "max_seq_length": 128},
+        "mnli": {"num_train_epochs": 5, "max_seq_length": 128},
+        "mrpc": {"num_train_epochs": 20, "max_seq_length": 128},
+        "sst2": {"num_train_epochs": 10, "max_seq_length": 128},
+        "stsb": {"num_train_epochs": 100, "max_seq_length": 128},
+        "qqp": {"num_train_epochs": 5, "max_seq_length": 128},
+        "qnli": {"num_train_epochs": 10, "max_seq_length": 128},
+        "rte": {"num_train_epochs": 50, "max_seq_length": 128},
+        "imdb": {"num_train_epochs": 30, "max_seq_length": 512},
+        "wiki": {"num_train_epochs": 1, "max_seq_length": 50},
+    }
+
+    acc_tasks = ["mnli", "mrpc", "sst2", "qqp", "qnli", "rte", "imdb"]
+    corr_tasks = ["stsb"]
+    mcc_tasks = ["cola"]
+    gen_tasks = ["wiki"]
+
+    # Prepare devices
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
+    )
+    n_gpu = torch.cuda.device_count()
+
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+
+    logger.info("device: {} n_gpu: {}".format(device, n_gpu))
+
+    # Prepare seed
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
+
+    task_name = args.task_name.lower()
+    args.data_dir = os.path.join(
+        os.path.expanduser("~"), ".cache/huggingface/datasets/wikitext"
+    )
+
+    # if task_name in default_params:
+    #     args.max_seq_length = default_params[task_name]["max_seq_length"]
+
+    """
+    Process data inputs
+    """
+    # if task_name not in processors:
+    #     raise ValueError("Task not found: %s" % task_name)
+
+    # processor = processors[task_name]()
+    # label_list = processor.get_labels()
+    # num_labels = len(label_list)
+    output_mode = output_modes[task_name]
+
+    train_dataset = datasets.load_from_disk(args.data_dir)["train"]
+    eval_dataset = datasets.load_from_disk(args.data_dir)["validation"]
+
+    logger.info("Load dataset done.")
+
+    # NOTE: hard code here args.student_model
+    tokenizer = GPT2Tokenizer.from_pretrained(
+        args.teacher_model, do_lower_case=args.do_lower_case
+    )
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    logger.info("Load tokenizer done.")
+
+    eval_examples = [
+        text for text in eval_dataset["text"] if text is not None and text != ""
+    ]
+
+    eval_features = convert_examples_to_features(
+        eval_examples, args.max_seq_length, tokenizer
+    )
+    eval_data, eval_labels = get_tensor_data(eval_features)
+    eval_sampler = SequentialSampler(eval_data)
+    eval_dataloader = DataLoader(
+        eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size
+    )
+    logger.info("Convert eval data done.")
+
+    teacher_model = GPT2LMHeadModel.from_pretrained(
+        args.teacher_model,
+        activation_function=args.hidden_act,
+        softmax_act=args.softmax_act,
+        output_hidden_states=True,
+    )
+    teacher_model.to(device)
+    # set teacher model to eval mode
+    teacher_model.eval()
+
+    # FIXME: eval is currently bypassed
+    result_t = do_eval(
+        teacher_model,
+        task_name,
+        eval_dataloader,
+        device,
+        output_mode,
+        eval_labels,
+        tokenizer,
+    )
+    logger.info("***** Teacher evaluation *****")
+    logger.info(result_t)
+
+
+if __name__ == "__main__":
+    main()
