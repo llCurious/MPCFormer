@@ -6,7 +6,13 @@ To profile 2PC transformer, use profile_transformer.py. Set up two machines, and
 On the first machine, run python profile_transformer.py 0, and on the second machine, run python profile_transformer.py 1. 
 
 P.S. The lib code should be modified to enable TTPServer
-`crypten/mpc/provider/ttp_provider.py`
+`crypten/mpc/provider/ttp_provider.py`:
+```python
+def __init__(self):
+    """Initializes a Trusted Third Party server that receives requests"""
+    # Initialize connection
+    crypten.init(config_file="path/to/yaml")
+```
 
 ```shell
 # 2PC protocol
