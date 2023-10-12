@@ -1,0 +1,2 @@
+## Execute the following cmd to evaluation the utility on BERT models of using GeLU-poly in PUMA.
+`python eval_puma_utility_bert.py --do_lower_case --max_seq_length 128 --hidden_act poly --softmax_act softmax --task_name RTE --teacher_model {path/to/trained/model}`
